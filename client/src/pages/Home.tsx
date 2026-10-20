@@ -48,6 +48,13 @@ const FeedbackView = lazy(() => import("@/components/FeedbackView").then(module 
 const AdminFeedbackView = lazy(() => import("@/components/FeedbackView").then(module => ({ default: module.AdminFeedbackView })));
 const lazyFallback = <div className="content-panel loading-state">Đang tải module…</div>;
 const APP_VERSION = "1.0.0";
+const formatVietnamTime = (date: Date) => new Intl.DateTimeFormat("vi-VN", {
+  timeZone: "Asia/Ho_Chi_Minh",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+}).format(date);
 const ExperimentJournal = lazy(() => import("@/components/ExperimentJournal").then(module => ({ default: module.ExperimentJournal })));
 const SeedingCalculator = lazy(() => import("@/components/SeedingCalculator").then(module => ({ default: module.SeedingCalculator })));
 const NycodenzCalculator = lazy(() => import("@/components/NycodenzCalculator").then(module => ({ default: module.NycodenzCalculator })));
@@ -237,6 +244,12 @@ function toSample(record: SampleRecord): Sample {
 
 
 export default function Home() {
+  const [vietnamTime, setVietnamTime] = useState(() => formatVietnamTime(new Date()));
+  useEffect(() => {
+    const updateVietnamTime = () => setVietnamTime(formatVietnamTime(new Date()));
+    const timer = window.setInterval(updateVietnamTime, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   const authQuery = trpc.auth.me.useQuery(undefined, { retry: false });
   const user = authQuery.data;
   const role = user?.role ?? "user";
@@ -264,11 +277,11 @@ export default function Home() {
   const rejectCalculatorMutation = trpc.content.rejectCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã không duyệt và xoá công cụ."); }, onError: error => toast.error(error.message) });
   const approvePendingEditMutation = trpc.content.approvePendingEdit.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success("Bản chỉnh sửa đã được duyệt và hiển thị."); }, onError: error => toast.error(error.message) });
   const rejectPendingEditMutation = trpc.content.rejectPendingEdit.useMutation({ onSuccess: async () => { await pendingEditsQuery.refetch(); toast.success("Bản chỉnh sửa không được duyệt và đã loại bỏ."); }, onError: error => toast.error(error.message) });
-  const createDraftMutation = trpc.content.createDraft.useMutation({ onSuccess: async (_, variables) => { await contentQuery.refetch(); toast.success("Nội dung đã được lưu vào bản nháp."); if (variables.kind === "protocol" && (variables.category === "Hypoxia" || variables.category === "HighPressure")) { setSpecialCategory(variables.category); setView("special"); } }, onError: error => toast.error(error.message) });
-  const createCalculatorMutation = trpc.content.createCalculator.useMutation({ onSuccess: async (_, variables) => { await contentQuery.refetch(); toast.success("Phương trình đã được tạo thành tool."); if (variables.category === "Hypoxia" || variables.category === "HighPressure") { setSpecialCategory(variables.category); setView("special"); } }, onError: error => toast.error(error.message) });
+  const createDraftMutation = trpc.content.createDraft.useMutation({ onSuccess: async (_, variables) => { await contentQuery.refetch(); toast.success("Nội dung đã được lưu vào bản nháp."); if (variables.kind === "protocol" && (variables.category === "Hypoxia" || variables.category === "HighPressure")) setSpecialCategory(variables.category); setView(draftReturnView); }, onError: error => toast.error(error.message) });
+  const createCalculatorMutation = trpc.content.createCalculator.useMutation({ onSuccess: async (_, variables) => { await contentQuery.refetch(); toast.success("Phương trình đã được tạo thành tool."); if (variables.category === "Hypoxia" || variables.category === "HighPressure") setSpecialCategory(variables.category); setView(draftReturnView); }, onError: error => toast.error(error.message) });
   const deleteCalculatorMutation = trpc.content.deleteCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã xoá công thức tính."); }, onError: error => toast.error(error.message) });
-  const updateCalculatorMutation = trpc.content.updateCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success(isAdmin ? "Công cụ đã được cập nhật và duyệt." : "Công cụ đã gửi bản chỉnh sửa, chờ Admin duyệt."); }, onError: error => toast.error(error.message) });
-  const updateDraftMutation = trpc.content.updateDraft.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success(isAdmin ? "Quy trình đã được cập nhật và duyệt." : "Quy trình đã gửi bản chỉnh sửa, chờ Admin duyệt."); }, onError: error => toast.error(error.message) });
+  const updateCalculatorMutation = trpc.content.updateCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success(isAdmin ? "Công cụ đã được cập nhật và duyệt." : "Công cụ đã gửi bản chỉnh sửa, chờ Admin duyệt."); setView(draftReturnView); }, onError: error => toast.error(error.message) });
+  const updateDraftMutation = trpc.content.updateDraft.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success(isAdmin ? "Quy trình đã được cập nhật và duyệt." : "Quy trình đã gửi bản chỉnh sửa, chờ Admin duyệt."); setView(draftReturnView); }, onError: error => toast.error(error.message) });
   const deleteProtocolMutation = trpc.content.deleteProtocol.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã xóa quy trình khỏi kho."); }, onError: error => toast.error(error.message) });
   const adminDeleteProtocolMutation = trpc.content.adminDeleteProtocol.useMutation({ onSuccess: async () => { await contentQuery.refetch(); setSelectedProtocol(null); toast.success("Đã xoá vĩnh viễn quy trình khỏi hệ thống."); }, onError: error => toast.error(error.message) });
   const deleteSampleMutation = trpc.content.deleteSample.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã xóa mục lý thuyết."); }, onError: error => toast.error(error.message) });
@@ -305,6 +318,7 @@ export default function Home() {
   const [recent, setRecent] = useState<string[]>([]);
   const [draftType, setDraftType] = useState<"Quy trình" | "Mẫu" | "Lý thuyết" | "Phương trình">("Quy trình");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftReturnView, setDraftReturnView] = useState<View>("admin");
   const [draftTitle, setDraftTitle] = useState("");
   const [draftOwner, setDraftOwner] = useState("Lab editor");
   const [draftBody, setDraftBody] = useState("");
@@ -402,12 +416,12 @@ export default function Home() {
       toast.success("Đã tính và lưu vào lịch sử phiên.");
     }} recent={recent} clearHistory={clearCalculationHistory} deleteCalculation={deleteCalculation} canCalculate={canEdit} volumeUnit={state.volumeUnit} setVolumeUnit={value => updateState({ volumeUnit: value })} cellUnit={state.cellUnit} setCellUnit={value => updateState({ cellUnit: value })} dilutionMode={state.dilutionMode} setDilutionMode={value => updateState({ dilutionMode: value })} dilutionFactorValue={state.dilutionFactorValue} setDilutionFactorValue={value => updateState({ dilutionFactorValue: value })} dilutionInitialVolume={state.dilutionInitialVolume} setDilutionInitialVolume={value => updateState({ dilutionInitialVolume: value })} dilutionAddedVolume={state.dilutionAddedVolume} setDilutionAddedVolume={value => updateState({ dilutionAddedVolume: value })} manualSolutionVolume={state.manualSolutionVolume} setManualSolutionVolume={value => updateState({ manualSolutionVolume: value })} manualCountedSquares={state.manualCountedSquares} setManualCountedSquares={value => updateState({ manualCountedSquares: value })} />;
   };
-  const editProtocol = (protocol: Protocol) => { setEditingId(protocol.id); setDraftType("Quy trình"); setDraftCategory(["Hypoxia", "HighPressure", "ProtocolCells", "ProtocolPCR", "ProtocolEvaluation", "ProtocolStaining"].includes(protocol.category) ? protocol.category as ContentCategory : "ProtocolCells"); if (protocol.category === "Hypoxia" || protocol.category === "HighPressure") setSpecialCategory(protocol.category); setDraftTitle(protocol.title); setDraftOwner(protocol.owner); setDraftBody(protocol.summary); setDraftSteps(protocol.steps.length ? protocol.steps : [{ title: "", detail: "", time: "" }]); setSelectedProtocol(null); setView("createProtocol"); };
+  const editProtocol = (protocol: Protocol) => { setDraftReturnView(view); setEditingId(protocol.id); setDraftType("Quy trình"); setDraftCategory(["Hypoxia", "HighPressure", "ProtocolCells", "ProtocolPCR", "ProtocolEvaluation", "ProtocolStaining"].includes(protocol.category) ? protocol.category as ContentCategory : "ProtocolCells"); if (protocol.category === "Hypoxia" || protocol.category === "HighPressure") setSpecialCategory(protocol.category); setDraftTitle(protocol.title); setDraftOwner(protocol.owner); setDraftBody(protocol.summary); setDraftSteps(protocol.steps.length ? protocol.steps : [{ title: "", detail: "", time: "" }]); setSelectedProtocol(null); setView("createProtocol"); };
   const editSample = (sample: Sample) => { setEditingId(sample.id); setDraftType("Mẫu"); setDraftTitle(sample.name); setDraftBody(sample.description); setSelectedSample(null); setView("admin"); };
-  const startCreateProtocol = (category: "Custom" | SpecialCategory = "Custom") => { setDraftCategory(category === "Custom" ? "ProtocolCells" : category); setDraftType("Quy trình"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setDraftSteps([{ title: "", detail: "", time: "" }]); setView("createProtocol"); };
+  const startCreateProtocol = (category: "Custom" | SpecialCategory = "Custom") => { setDraftReturnView(view); setDraftCategory(category === "Custom" ? "ProtocolCells" : category); setDraftType("Quy trình"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setDraftSteps([{ title: "", detail: "", time: "" }]); setView("createProtocol"); };
   const startCreateSample = () => { setDraftType("Mẫu"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setView("admin"); };
-  const startCreateCalculator = (category: ContentCategory = "Custom") => { setDraftCategory(category); setDraftType("Phương trình"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setDraftFormula(""); setDraftInputUnits({}); setDraftOutputUnit(""); setDraftItems([]); setView("admin"); };
-  const editCalculator = (calculator: CalculatorDefinition) => { const config = calculator.config && typeof calculator.config === "object" ? calculator.config as { inputUnits?: Record<string, string>; outputUnit?: string; units?: Record<string, string>; variables?: FormulaItem[] } : {}; const configuredUnits = config.inputUnits ?? config.units ?? {}; let formulaVariables: string[] = []; try { formulaVariables = getFormulaVariables(calculator.formula); } catch { /* legacy display formulas are still editable */ } const items = config.variables?.length ? config.variables : formulaVariables.map(key => ({ key, label: key, unit: configuredUnits[key] ?? "" })); setDraftType("Phương trình"); setDraftCategory((calculator.category as ContentCategory) || "Custom"); setEditingId(String(calculator.dbId ?? calculator.id)); setDraftTitle(calculator.name); setDraftBody(calculator.description); setDraftFormula(calculator.formula); setDraftInputUnits(formulaVariables.length ? configuredUnits : {}); setDraftItems(items); setDraftOutputUnit(config.outputUnit ?? ""); setView("admin"); };
+  const startCreateCalculator = (category: ContentCategory = "Custom") => { setDraftReturnView(view); setDraftCategory(category); setDraftType("Phương trình"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setDraftFormula(""); setDraftInputUnits({}); setDraftOutputUnit(""); setDraftItems([]); setView("admin"); };
+  const editCalculator = (calculator: CalculatorDefinition) => { const config = calculator.config && typeof calculator.config === "object" ? calculator.config as { inputUnits?: Record<string, string>; outputUnit?: string; units?: Record<string, string>; variables?: FormulaItem[] } : {}; const configuredUnits = config.inputUnits ?? config.units ?? {}; let formulaVariables: string[] = []; try { formulaVariables = getFormulaVariables(calculator.formula); } catch { /* legacy display formulas are still editable */ } const items = config.variables?.length ? config.variables : formulaVariables.map(key => ({ key, label: key, unit: configuredUnits[key] ?? "" })); setDraftReturnView(view); setDraftType("Phương trình"); setDraftCategory((calculator.category as ContentCategory) || "Custom"); setEditingId(String(calculator.dbId ?? calculator.id)); setDraftTitle(calculator.name); setDraftBody(calculator.description); setDraftFormula(calculator.formula); setDraftInputUnits(formulaVariables.length ? configuredUnits : {}); setDraftItems(items); setDraftOutputUnit(config.outputUnit ?? ""); setView("admin"); };
   const handleSaveDraft = () => {
     if (!draftTitle.trim()) return toast.error("Vui lòng nhập tên nội dung.");
     if (draftType === "Quy trình" && !draftOwner.trim()) return toast.error("Vui lòng nhập tên người viết quy trình.");
@@ -466,7 +480,7 @@ export default function Home() {
         <div className="sidebar-top">
           <div className="brand-lockup"><span className="brand-mark">RP</span><span className="brand-copy"><span className="brand-name">Rebiomed Protocol</span><small>From Researchers to Researchers</small></span></div>
           <button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="Đóng menu"><X size={18} /></button>
-          <div className="workspace-badge"><div><span className="status-dot" /> PRIVATE LAB WORKSPACE</div><span className="workspace-version">Version {APP_VERSION}</span></div>
+          <div className="workspace-badge"><div><span className="status-dot" /> PRIVATE LAB WORKSPACE</div><span className="workspace-version"><span>Version {APP_VERSION}</span><time dateTime={vietnamTime} title="Giờ Việt Nam (UTC+7)">{vietnamTime}</time></span></div>
         </div>
         <div className="nav-caption">Workspace</div>
         <nav className="main-nav">
