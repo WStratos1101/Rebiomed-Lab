@@ -15,8 +15,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "laboratory",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "database_name": "rebiomed-protocol",
+      "database_id": "e82dea7d-8fe7-48a7-a154-191f9361b0aa",
       "migrations_dir": "cloudflare/migrations"
     }
   ],
