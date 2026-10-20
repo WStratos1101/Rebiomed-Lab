@@ -1,0 +1,82 @@
+name: Check and deploy Cloudflare
+
+on:
+  push:
+    branches: [cloudflare]
+  pull_request:
+    branches: [cloudflare]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check application types
+        run: pnpm exec tsc --noEmit
+
+      - name: Check Workers types
+        run: pnpm exec tsc --project cloudflare/tsconfig.json
+
+      - name: Run unit tests
+        run: pnpm test
+
+      - name: Build frontend
+        run: pnpm exec vite build
+
+      - name: Verify public assets
+        run: node scripts/verify-public-build.mjs
+
+  deploy:
+    needs: check
+    environment: productionW
+    if: github.ref == 'refs/heads/cloudflare' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec vite build
+
+      - run: node scripts/verify-public-build.mjs
+
+      - name: Apply D1 migrations
+        run: pnpm exec wrangler d1 migrations apply DB --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy Worker
+        run: pnpm exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

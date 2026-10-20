@@ -1,0 +1,61 @@
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import path from "node:path";
+import { defineConfig, type Plugin } from "vite";
+import { publicPlatformScript } from "./server/_core/publicConfig";
+function vitePluginPublicPlatformConfig(): Plugin {
+    return {
+        name: "public-platform-config",
+        configureServer(server) {
+            server.middlewares.use("/api/platform/config.js", (_req, res) => {
+                res.setHeader("Content-Type", "application/javascript");
+                res.setHeader("Cache-Control", "no-store");
+                res.end(publicPlatformScript());
+            });
+        },
+        generateBundle() {
+            this.emitFile({ type: "asset", fileName: "api/platform/config.js", source: publicPlatformScript() });
+        },
+    };
+}
+const plugins = [vitePluginPublicPlatformConfig(), react(), tailwindcss()];
+export default defineConfig({
+    base: process.env.GITHUB_PAGES_BASE ?? "/",
+    plugins,
+    resolve: {
+        alias: {
+            "@": path.resolve(import.meta.dirname, "client", "src"),
+            "@shared": path.resolve(import.meta.dirname, "shared"),
+            "@assets": path.resolve(import.meta.dirname, "attached_assets"),
+        },
+    },
+    envDir: path.resolve(import.meta.dirname),
+    root: path.resolve(import.meta.dirname, "client"),
+    publicDir: path.resolve(import.meta.dirname, "client", "public"),
+    build: {
+        outDir: path.resolve(import.meta.dirname, "dist/public"),
+        emptyOutDir: true,
+        chunkSizeWarningLimit: 700,
+        rollupOptions: {
+            output: {
+                manualChunks: {
+                    react: ["react", "react-dom"],
+                    ui: ["lucide-react", "sonner"],
+                    data: ["@tanstack/react-query", "@trpc/client", "@trpc/react-query", "superjson"],
+                    export: ["xlsx", "jspdf", "html2canvas"],
+                },
+            },
+        },
+    },
+    server: {
+        host: true,
+        allowedHosts: [
+            "localhost",
+            "127.0.0.1",
+        ],
+        fs: {
+            strict: true,
+            deny: ["**/.*"],
+        },
+    },
+});
