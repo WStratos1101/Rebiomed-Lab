@@ -1,0 +1,796 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { trpc } from "@/lib/trpc";
+import { getFormulaVariables } from "@shared/formulaMath";
+import { seedChemicalRecipes, type ChemicalRecipe } from "@shared/chemicalRecipes";
+import { calculateCellsNeeded, calculateManualCellCount, calculateVolumeToTake } from "@/lib/cellCalculations";
+import { calculateDilution, CONCENTRATION_UNITS, VOLUME_UNITS, type ConcentrationUnit, type DilutionTarget, type VolumeUnit, volumeToMl } from "@/lib/dilutionMath";
+import { parseLocaleNumber } from "@/lib/numberInput";
+import { toast } from "sonner";
+import {
+  Archive,
+  AlertTriangle,
+  ArrowLeft,
+  Beaker,
+  BookOpen,
+  Calculator,
+  Bell,
+  Check,
+  ClipboardCheck,
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  Clock3,
+  FilePenLine,
+  FlaskConical,
+  Gauge,
+  Github,
+  LayoutDashboard,
+  Menu,
+  MoreHorizontal,
+  MoreVertical,
+  Plus,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  UserRound,
+  X,
+} from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+
+const HypoxiaCalculator = lazy(() => import("@/components/HypoxiaCalculator").then(module => ({ default: module.HypoxiaCalculator })));
+const CustomCalculator = lazy(() => import("@/components/CustomCalculator").then(module => ({ default: module.CustomCalculator })));
+const SpecialExperimentsView = lazy(() => import("@/components/SpecialExperimentsView").then(module => ({ default: module.SpecialExperimentsView })));
+const ChemicalMixingView = lazy(() => import("@/components/ChemicalMixingView").then(module => ({ default: module.ChemicalMixingView })));
+const FeedbackView = lazy(() => import("@/components/FeedbackView").then(module => ({ default: module.FeedbackView })));
+const AdminFeedbackView = lazy(() => import("@/components/FeedbackView").then(module => ({ default: module.AdminFeedbackView })));
+const lazyFallback = <div className="content-panel loading-state">Đang tải module…</div>;
+const APP_VERSION = "1.0.0";
+const ExperimentJournal = lazy(() => import("@/components/ExperimentJournal").then(module => ({ default: module.ExperimentJournal })));
+const SeedingCalculator = lazy(() => import("@/components/SeedingCalculator").then(module => ({ default: module.SeedingCalculator })));
+const NycodenzCalculator = lazy(() => import("@/components/NycodenzCalculator").then(module => ({ default: module.NycodenzCalculator })));
+const BcaWorkingSolutionCalculator = lazy(() => import("@/components/BcaWorkingSolutionCalculator").then(module => ({ default: module.BcaWorkingSolutionCalculator })));
+const QpcrCalculationView = lazy(() => import("@/components/QpcrCalculationView").then(module => ({ default: module.QpcrCalculationView })));
+type SpecialCategory = "Hypoxia" | "HighPressure";
+const SPECIAL_CATEGORY_LABEL: Record<SpecialCategory, string> = { Hypoxia: "Nuôi cấy Hypoxia", HighPressure: "Nuôi cấy áp suất cao" };
+type MasterMixTab = "cdna" | "qdna";
+
+type View = "overview" | "protocols" | "samples" | "calculator" | "qpcr" | "special" | "chemicals" | "chemicalStock" | "chemicalIcc" | "masterMix" | "chemicalCdna" | "feedback" | "admin" | "adminAccounts" | "adminFeedback" | "auth" | "userAccount" | "createProtocol";
+type Protocol = {
+  id: string;
+  title: string;
+  category: string;
+  tag: string;
+  status: "Đã duyệt" | "Bản nháp";
+  version: string;
+  updatedAt: string;
+  owner: string;
+  summary: string;
+  duration: string;
+  steps: ProtocolStep[];
+  notes: ProtocolNote[];
+};
+type ProtocolNote = string | { type: "table"; title: string; columns: string[]; rows: string[][] };
+type ProtocolStep = { title: string; detail: string; time: string; calculatorIds?: string[] };
+type Sample = {
+  id: string;
+  code: string;
+  name: string;
+  group: string;
+  status: string;
+  updatedAt: string;
+  description: string;
+  properties: { label: string; value: string }[];
+  theory: string;
+};
+
+type FormulaItem = { key: string; label: string; unit: string };
+
+type ToolGroup = "Chemicals" | "Cells" | "PCR" | "Custom" | "Hypoxia" | "HighPressure";
+type ProtocolCategory = "ProtocolCells" | "ProtocolPCR" | "ProtocolEvaluation" | "ProtocolStaining";
+type ContentCategory = ToolGroup | ProtocolCategory;
+const PROTOCOL_CATEGORY_LABEL: Record<ProtocolCategory, string> = { ProtocolCells: "Quy trình cho Tế bào", ProtocolPCR: "Quy trình cho PCR", ProtocolEvaluation: "Quy trình đánh giá", ProtocolStaining: "Quy trình nhuộm" };
+const PROTOCOL_CATEGORY_ORDER: ProtocolCategory[] = ["ProtocolCells", "ProtocolPCR", "ProtocolEvaluation", "ProtocolStaining"];
+const TOOL_GROUP_LABEL: Record<ToolGroup, string> = { Chemicals: "Hoá chất", Cells: "Tế bào", PCR: "PCR", Custom: "Khác", Hypoxia: "Hypoxia", HighPressure: "Áp suất cao" };
+
+type CalculatorDefinition = {
+  id: string;
+  dbId?: number;
+  config?: unknown;
+  name: string;
+  category: string;
+  formula: string;
+  description: string;
+  status?: string;
+  color: string;
+  protocolOnly?: boolean;
+};
+type CalculatorRecord = { id: number; slug: string; name: string; category: string; formula: string; description: string; config: unknown; status: string; active: number };
+type PendingContentEdit = { kind: "protocol" | "calculator"; id: number; title: string; editorId: number | null; updatedAt: Date | string | null };
+
+const initialProtocols: Protocol[] = [];
+const initialSamples: Sample[] = [];
+
+const calculators: CalculatorDefinition[] = [
+  { id: "unit-converter", name: "Bộ chuyển đổi đơn vị", category: "Utilities", formula: "Đổi đơn vị", description: "Chuyển đổi nhanh thể tích, khối lượng, mol, tế bào, áp suất và nhiệt độ.", color: "blue" },
+  { id: "dilution", name: "Pha loãng nồng độ", category: "Dung dịch", formula: "C₁V₁ = C₂V₂", description: "Tính thể tích stock cần lấy hoặc nồng độ sau pha loãng.", color: "teal" },
+  { id: "viability", name: "Cell viability", category: "Cell culture", formula: "Sống / Tổng × 100", description: "Tính tỷ lệ sống từ số tế bào sống và tổng số tế bào.", color: "amber" },
+  { id: "molarity", name: "Molarity → mass", category: "Hóa chất", formula: "m = C × V × MW", description: "Quy đổi nồng độ mol sang khối lượng chất cần cân.", color: "blue" },
+  { id: "manual-cell-count", name: "Đếm tế bào bằng buồng đếm thủ công", category: "Cells", formula: "(TB trung bình / ô) × pha loãng × 10⁴", description: "Tính mật độ tế bào từ số đếm trong các ô của buồng đếm.", color: "teal" },
+  { id: "cells-needed", name: "Tính số lượng tế bào cần", category: "Cell seeding", formula: "Mật độ × số đơn vị × thể tích", description: "Tính tổng số tế bào cần chuẩn bị cho kế hoạch seed.", color: "amber" },
+  { id: "volume-to-take", name: "Tính thể tích cần lấy", category: "Cell seeding", formula: "N mong muốn / N tổng × V tổng", description: "Tính thể tích suspension cần hút để đạt số tế bào mong muốn.", color: "blue" },
+  { id: "volume-to-add", name: "Tính lượng thể tích cần thêm", category: "Chemicals", formula: "V mục tiêu − V có sẵn − V đã thêm", description: "Tính lượng dung tích còn cần bổ sung để đạt tổng dung tích mục tiêu.", color: "amber" },
+  { id: "seeding", name: "Seeding", category: "Cells", formula: "Tổng môi trường − môi trường có tế bào", description: "Tính môi trường tổng, suspension cần lấy và môi trường nuôi cấy cần bổ sung.", color: "amber" },
+  { id: "nycodenz", name: "Tính pha Nycodenz", category: "Chemicals", formula: "V Nycodenz = V lớp × % sử dụng / % stock", description: "Tool ẩn chỉ dùng trong bước quy trình để pha Nycodenz và GBSSB.", color: "teal", protocolOnly: true },
+  { id: "bca-working-solution", name: "Pha Working Solution BCA", category: "Chemicals", formula: "A = V giếng × (giếng sử dụng + blank); B = A / 50", description: "Tính dung tích Reagent A và Reagent B cần pha cho assay BCA.", color: "amber", protocolOnly: true },
+];
+
+
+type TeamMember = { id: number; username?: string | null; name: string; email: string; role: "admin" | "supporter" | "user" | "researcher" | "viewer"; approvalStatus: "pending" | "approved" | "rejected"; loginMethod?: string | null; lastActive: string };
+type NotificationType = "Account" | "Quy trình" | "Tool" | "Phản ánh" | "Hoá chất";
+type AdminNotification = { id: string; type: NotificationType; title: string; creator: string; time: string; view: "adminAccounts" | "adminFeedback" };
+
+const initialTeam: TeamMember[] = [];
+
+const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
+  { id: "overview", label: "Nhật ký Thí nghiệm", icon: LayoutDashboard },
+  { id: "protocols", label: "Quy trình", icon: ClipboardList },
+  { id: "samples", label: "Mẫu & lý thuyết", icon: FlaskConical },
+  { id: "calculator", label: "Công cụ tính", icon: Calculator },
+  { id: "qpcr", label: "Tính toán qPCR", icon: Calculator },
+  { id: "chemicals", label: "Pha hoá chất", icon: FlaskConical },
+  { id: "masterMix", label: "Master Mix", icon: FlaskConical },
+  { id: "special", label: "Thí nghiệm điều kiện đặc trưng", icon: Beaker },
+  { id: "feedback", label: "Phản ánh", icon: AlertTriangle },
+  { id: "admin", label: "Quản lý nội dung", icon: Settings2 },
+  { id: "adminAccounts", label: "Quản trị Admin", icon: ShieldCheck },
+  { id: "adminFeedback", label: "Các phản ánh", icon: ClipboardCheck },
+];
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 4 }).format(value);
+}
+
+type CellUnit = "cell/mL" | "cell/giếng" | "cell/flask" | "cell";
+type DilutionSettings = { mode: DilutionMode; factor: string; initial: string; added: string };
+type DilutionMode = "factor" | "volumes";
+type CalculatorDraftState = {
+  c1: string;
+  v1: string;
+  c2: string;
+  v2: string;
+  manualSolutionVolume: string;
+  manualCountedSquares: string;
+  volumeUnit: VolumeUnit;
+  cellUnit: CellUnit;
+  dilutionMode: DilutionMode;
+  dilutionFactorValue: string;
+  dilutionInitialVolume: string;
+  dilutionAddedVolume: string;
+  dilutionTarget: DilutionTarget;
+  dilutionConcentrationMode: "stock" | "percent";
+  dilutionVolumeUnits: Record<"v1" | "v2", VolumeUnit>;
+  dilutionConcentrationUnits: Record<"c1" | "c2", ConcentrationUnit>;
+};
+function createCalculatorDraftState(id = ""): CalculatorDraftState {
+  const isManualCount = id === "manual-cell-count";
+  return { c1: "10", v1: "20", c2: "2", v2: "100", manualSolutionVolume: "1", manualCountedSquares: "4", volumeUnit: id === "dilution" || id === "manual-cell-count" ? "µL" : id === "molarity" ? "L" : "mL", cellUnit: id === "volume-to-take" ? "cell" : "cell/mL", dilutionMode: "factor", dilutionFactorValue: isManualCount ? "1.5" : "2", dilutionInitialVolume: isManualCount ? "20" : "1", dilutionAddedVolume: isManualCount ? "10" : "1", dilutionTarget: "V1", dilutionConcentrationMode: "stock", dilutionVolumeUnits: { v1: "µL", v2: "µL" }, dilutionConcentrationUnits: { c1: "mg/mL", c2: "mg/mL" } };
+}
+function calculateCalculatorDraft(id: string, state: CalculatorDraftState): number | null {
+  const values = [state.c1, state.v1, state.c2, state.v2].map(parseLocaleNumber);
+  const positive = (value: number) => Number.isFinite(value) && value > 0;
+  const initialVolume = parseLocaleNumber(state.dilutionInitialVolume);
+  const dilutionFactor = state.dilutionMode === "factor" ? parseLocaleNumber(state.dilutionFactorValue) : (initialVolume + parseLocaleNumber(state.dilutionAddedVolume)) / initialVolume;
+  const concentrationUnits = state.dilutionConcentrationMode === "percent" ? { c1: "%" as const, c2: "%" as const } : state.dilutionConcentrationUnits;
+  if (id === "dilution") return calculateDilution(state.dilutionTarget, { c1: values[0], v1: values[1], c2: values[2], v2: values[3], c1Unit: concentrationUnits.c1, c2Unit: concentrationUnits.c2, v1Unit: state.dilutionVolumeUnits.v1, v2Unit: state.dilutionVolumeUnits.v2 });
+  if (id === "viability") return positive(values[0]) && positive(values[1]) ? (values[0] / values[1]) * 100 : null;
+  if (id === "molarity") return positive(values[0]) && positive(values[1]) && positive(values[2]) ? values[0] * (volumeToMl(values[1], state.volumeUnit) / 1000) * values[2] : null;
+  if (id === "manual-cell-count") return (state.dilutionMode !== "volumes" || (positive(initialVolume) && parseLocaleNumber(state.dilutionAddedVolume) >= 0)) ? calculateManualCellCount(values[0], parseLocaleNumber(state.manualCountedSquares), dilutionFactor, positive(parseLocaleNumber(state.manualSolutionVolume)) ? parseLocaleNumber(state.manualSolutionVolume) : 1) : null;
+  if (id === "cells-needed") return calculateCellsNeeded(values[0], state.cellUnit, values[1], values[2], state.volumeUnit);
+  if (id === "volume-to-take") return calculateVolumeToTake(values[0], values[1], state.cellUnit, values[2], state.volumeUnit, values[3]);
+  if (id === "volume-to-add") { const amountToAdd = values[2] - values[0] - values[1]; return Number.isFinite(values[0]) && values[0] >= 0 && Number.isFinite(values[1]) && values[1] >= 0 && positive(values[2]) && amountToAdd >= 0 ? amountToAdd : null; }
+  return null;
+}
+function calculatorDraftUnit(id: string, state: CalculatorDraftState): string {
+  if (id === "viability") return "%";
+  if (id === "molarity") return "g";
+  if (id === "dilution") return state.dilutionTarget.startsWith("C") ? (state.dilutionConcentrationMode === "percent" ? "%" : state.dilutionConcentrationUnits[state.dilutionTarget.toLowerCase() as "c1" | "c2"]) : state.dilutionVolumeUnits[state.dilutionTarget.toLowerCase() as "v1" | "v2"];
+  if (id === "volume-to-take" || id === "volume-to-add") return state.volumeUnit;
+  if (id === "manual-cell-count") return "cell";
+  if (id === "cells-needed") return "cells";
+  return state.volumeUnit;
+}
+
+function UserAvatar({ name }: { name?: string | null }) {
+  const initials = (name || "Lab").split(" ").map(part => part[0]).slice(-2).join("").toUpperCase();
+  return <span className="avatar">{initials || "LV"}</span>;
+}
+
+type ProtocolRecord = { id: number; title: string; category: string; tag: string; status: Protocol["status"]; version: string; updatedAt: Date | string; owner: string; summary: string; duration: string; steps: unknown; notes: unknown };
+type SampleRecord = { id: number; code: string; name: string; groupName: string; status: string; updatedAt: Date | string; description: string; properties: unknown; theory: string };
+
+function toProtocolNotes(value: unknown): ProtocolNote[] {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed) as unknown; } catch { return []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((note): note is ProtocolNote => typeof note === "string" || (typeof note === "object" && note !== null && (note as { type?: unknown }).type === "table" && Array.isArray((note as { columns?: unknown }).columns) && Array.isArray((note as { rows?: unknown }).rows)));
+}
+function toProtocol(record: ProtocolRecord): Protocol {
+  return { id: String(record.id), title: record.title, category: record.category, tag: record.tag, status: record.status, version: record.version, updatedAt: new Date(record.updatedAt).toLocaleDateString("vi-VN"), owner: record.owner, summary: record.summary, duration: record.duration, steps: Array.isArray(record.steps) ? record.steps as Protocol["steps"] : [], notes: toProtocolNotes(record.notes) };
+}
+
+function protocolCategory(value: string): ProtocolCategory {
+  if (["ProtocolCells", "Cell culture", "Cells", "Cell"].includes(value)) return "ProtocolCells";
+  if (["ProtocolPCR", "PCR", "Molecular", "qPCR"].includes(value)) return "ProtocolPCR";
+  if (["ProtocolEvaluation", "Evaluation", "Biochemistry"].includes(value)) return "ProtocolEvaluation";
+  if (["ProtocolStaining", "Staining", "Nhuộm"].includes(value)) return "ProtocolStaining";
+  return "ProtocolCells";
+}
+
+function toSample(record: SampleRecord): Sample {
+  return { id: String(record.id), code: record.code, name: record.name, group: record.groupName, status: record.status, updatedAt: new Date(record.updatedAt).toLocaleDateString("vi-VN"), description: record.description, properties: Array.isArray(record.properties) ? record.properties as Sample["properties"] : [], theory: record.theory };
+}
+
+
+export default function Home() {
+  const authQuery = trpc.auth.me.useQuery(undefined, { retry: false });
+  const user = authQuery.data;
+  const role = user?.role ?? "user";
+  const isAdmin = role === "admin" || (role as string) === "supporter";
+  const isSupporter = user?.isSupporter === true;
+  const canReceiveAdminNotifications = isAdmin && !isSupporter;
+  const canEdit = true;
+  const contentQuery = trpc.content.all.useQuery(undefined, { retry: false });
+  const teamQuery = trpc.team.list.useQuery(undefined, { enabled: isAdmin, retry: false });
+  const pendingEditsQuery = trpc.content.pendingEdits.useQuery(undefined, { enabled: isAdmin, retry: false, refetchInterval: 15000 });
+  const adminFeedbackQuery = trpc.feedbacks.adminList.useQuery(undefined, { enabled: canReceiveAdminNotifications, retry: false, refetchInterval: 15000 });
+  const chemicalsQuery = trpc.chemicals.list.useQuery(undefined, { enabled: canReceiveAdminNotifications, retry: false });
+  const logoutMutation = trpc.auth.logout.useMutation({ onSuccess: async () => { await authQuery.refetch(); setView("overview"); toast.success("Tạm biệt sau một ngày thí nghiệm"); } });
+  const updateProfileMutation = trpc.auth.updateProfile.useMutation({ onSuccess: async () => { await authQuery.refetch(); toast.success("Hồ sơ User đã được cập nhật."); }, onError: error => toast.error(error.message) });
+  const updateRoleMutation = trpc.team.updateRole.useMutation({ onSuccess: () => teamQuery.refetch(), onError: error => toast.error(error.message) });
+  const updateApprovalMutation = trpc.team.updateApproval.useMutation({ onSuccess: () => teamQuery.refetch(), onError: error => toast.error(error.message) });
+  const revokeAccessMutation = trpc.team.revokeAccess.useMutation({ onSuccess: () => { teamQuery.refetch(); toast.success("Đã thu hồi quyền truy cập của User."); }, onError: error => toast.error(error.message) });
+  const deleteUserMutation = trpc.team.deleteUser.useMutation({ onSuccess: () => { teamQuery.refetch(); toast.success("Đã xoá User."); }, onError: error => toast.error(error.message) });
+  const resetPasswordMutation = trpc.team.resetPassword.useMutation({ onSuccess: () => toast.success("Đã đặt lại mật khẩu."), onError: error => toast.error(error.message) });
+  const approveProtocolMutation = trpc.content.approveProtocol.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Quy trình đã được duyệt."); }, onError: error => toast.error(error.message) });
+  const rejectProtocolMutation = trpc.content.rejectProtocol.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã không duyệt và xoá quy trình."); }, onError: error => toast.error(error.message) });
+  const approveSampleMutation = trpc.content.approveSample.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Mục lý thuyết đã được duyệt."); }, onError: error => toast.error(error.message) });
+  const rejectSampleMutation = trpc.content.rejectSample.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã không duyệt và xoá mục thông tin."); }, onError: error => toast.error(error.message) });
+  const approveCalculatorMutation = trpc.content.approveCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Công cụ đã được duyệt."); }, onError: error => toast.error(error.message) });
+  const rejectCalculatorMutation = trpc.content.rejectCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã không duyệt và xoá công cụ."); }, onError: error => toast.error(error.message) });
+  const approvePendingEditMutation = trpc.content.approvePendingEdit.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success("Bản chỉnh sửa đã được duyệt và hiển thị."); }, onError: error => toast.error(error.message) });
+  const rejectPendingEditMutation = trpc.content.rejectPendingEdit.useMutation({ onSuccess: async () => { await pendingEditsQuery.refetch(); toast.success("Bản chỉnh sửa không được duyệt và đã loại bỏ."); }, onError: error => toast.error(error.message) });
+  const createDraftMutation = trpc.content.createDraft.useMutation({ onSuccess: async (_, variables) => { await contentQuery.refetch(); toast.success("Nội dung đã được lưu vào bản nháp."); if (variables.kind === "protocol" && (variables.category === "Hypoxia" || variables.category === "HighPressure")) { setSpecialCategory(variables.category); setView("special"); } }, onError: error => toast.error(error.message) });
+  const createCalculatorMutation = trpc.content.createCalculator.useMutation({ onSuccess: async (_, variables) => { await contentQuery.refetch(); toast.success("Phương trình đã được tạo thành tool."); if (variables.category === "Hypoxia" || variables.category === "HighPressure") { setSpecialCategory(variables.category); setView("special"); } }, onError: error => toast.error(error.message) });
+  const deleteCalculatorMutation = trpc.content.deleteCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã xoá công thức tính."); }, onError: error => toast.error(error.message) });
+  const updateCalculatorMutation = trpc.content.updateCalculator.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success(isAdmin ? "Công cụ đã được cập nhật và duyệt." : "Công cụ đã gửi bản chỉnh sửa, chờ Admin duyệt."); }, onError: error => toast.error(error.message) });
+  const updateDraftMutation = trpc.content.updateDraft.useMutation({ onSuccess: async () => { await contentQuery.refetch(); await pendingEditsQuery.refetch(); toast.success(isAdmin ? "Quy trình đã được cập nhật và duyệt." : "Quy trình đã gửi bản chỉnh sửa, chờ Admin duyệt."); }, onError: error => toast.error(error.message) });
+  const deleteProtocolMutation = trpc.content.deleteProtocol.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã xóa quy trình khỏi kho."); }, onError: error => toast.error(error.message) });
+  const adminDeleteProtocolMutation = trpc.content.adminDeleteProtocol.useMutation({ onSuccess: async () => { await contentQuery.refetch(); setSelectedProtocol(null); toast.success("Đã xoá vĩnh viễn quy trình khỏi hệ thống."); }, onError: error => toast.error(error.message) });
+  const deleteSampleMutation = trpc.content.deleteSample.useMutation({ onSuccess: async () => { await contentQuery.refetch(); toast.success("Đã xóa mục lý thuyết."); }, onError: error => toast.error(error.message) });
+  const [view, setView] = useState<View>("overview");
+  const [authIntent, setAuthIntent] = useState<"login" | "register">("login");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
+  const [dismissedNotificationSignature, setDismissedNotificationSignature] = useState("");
+  const [notificationFilter, setNotificationFilter] = useState<NotificationType | "all">("all");
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>(() => { try { return JSON.parse(window.localStorage.getItem("rebiomed-admin-read-notifications") || "[]") as string[]; } catch { return []; } });
+  const [specialCategory, setSpecialCategory] = useState<SpecialCategory>("Hypoxia");
+  const [masterMixTab, setMasterMixTab] = useState<MasterMixTab>("cdna");
+  const [draftCategory, setDraftCategory] = useState<ContentCategory>("Custom");
+  const [mobileNav, setMobileNav] = useState(false);
+  const [expandedNavSections, setExpandedNavSections] = useState<Record<string, boolean>>({});
+  const [protocols, setProtocols] = useState(initialProtocols);
+  const [samples, setSamples] = useState(initialSamples);
+  const [selectedProtocol, setSelectedProtocol] = useState<Protocol | null>(null);
+  const [selectedSample, setSelectedSample] = useState<Sample | null>(null);
+  const [selectedCalc, setSelectedCalc] = useState("dilution");
+  const [c1, setC1] = useState("10");
+  const [v1, setV1] = useState("20");
+  const [c2, setC2] = useState("2");
+  const [v2, setV2] = useState("100");
+  const [manualSolutionVolume, setManualSolutionVolume] = useState("1");
+  const [manualCountedSquares, setManualCountedSquares] = useState("4");
+  const [volumeUnits, setVolumeUnits] = useState<Record<string, VolumeUnit>>({ dilution: "µL", molarity: "L", "cells-needed": "mL", "volume-to-take": "mL", "manual-cell-count": "µL" });
+  const [cellUnits, setCellUnits] = useState<Record<string, CellUnit>>({ "cells-needed": "cell/mL", "volume-to-take": "cell" });
+  const [dilutionSettings, setDilutionSettings] = useState<Record<string, DilutionSettings>>({ "manual-cell-count": { mode: "factor", factor: "1.5", initial: "20", added: "10" } });
+  const [dilutionTarget, setDilutionTarget] = useState<DilutionTarget>("V1");
+  const [dilutionConcentrationMode, setDilutionConcentrationMode] = useState<"stock" | "percent">("stock");
+  const [dilutionVolumeUnits, setDilutionVolumeUnits] = useState<Record<"v1" | "v2", VolumeUnit>>({ v1: "µL", v2: "µL" });
+  const [dilutionConcentrationUnits, setDilutionConcentrationUnits] = useState<Record<"c1" | "c2", ConcentrationUnit>>({ c1: "mg/mL", c2: "mg/mL" });
+  const [recent, setRecent] = useState<string[]>([]);
+  const [draftType, setDraftType] = useState<"Quy trình" | "Mẫu" | "Lý thuyết" | "Phương trình">("Quy trình");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftOwner, setDraftOwner] = useState("Lab editor");
+  const [draftBody, setDraftBody] = useState("");
+  const [draftFormula, setDraftFormula] = useState("");
+  const [draftInputUnits, setDraftInputUnits] = useState<Record<string, string>>({});
+  const [draftOutputUnit, setDraftOutputUnit] = useState("");
+  const [draftItems, setDraftItems] = useState<FormulaItem[]>([]);
+  const [draftSteps, setDraftSteps] = useState<ProtocolStep[]>([{ title: "", detail: "", time: "" }]);
+  const [calculatorTools, setCalculatorTools] = useState<CalculatorDefinition[]>(calculators);
+  const [embeddedCalculatorStates, setEmbeddedCalculatorStates] = useState<Record<string, CalculatorDraftState>>({});
+  const volumeUnit = volumeUnits[selectedCalc] ?? "mL";
+  const setVolumeUnit = (unit: VolumeUnit) => setVolumeUnits(current => ({ ...current, [selectedCalc]: unit }));
+  const cellUnit = cellUnits[selectedCalc] ?? "cell/mL";
+  const setCellUnit = (unit: CellUnit) => setCellUnits(current => ({ ...current, [selectedCalc]: unit }));
+  const dilutionConfig = dilutionSettings[selectedCalc] ?? { mode: "factor" as DilutionMode, factor: "2", initial: "1", added: "1" };
+  const dilutionMode = dilutionConfig.mode;
+  const setDilutionMode = (mode: DilutionMode) => setDilutionSettings(current => ({ ...current, [selectedCalc]: { ...dilutionConfig, mode } }));
+  const dilutionFactorValue = dilutionConfig.factor;
+  const setDilutionFactorValue = (value: string) => setDilutionSettings(current => ({ ...current, [selectedCalc]: { ...dilutionConfig, factor: value } }));
+  const dilutionInitialVolume = dilutionConfig.initial;
+  const setDilutionInitialVolume = (value: string) => setDilutionSettings(current => ({ ...current, [selectedCalc]: { ...dilutionConfig, initial: value } }));
+  const dilutionAddedVolume = dilutionConfig.added;
+  const setDilutionAddedVolume = (value: string) => setDilutionSettings(current => ({ ...current, [selectedCalc]: { ...(current[selectedCalc] ?? dilutionConfig), added: value } }));
+  const activeDilutionConcentrationUnits = dilutionConcentrationMode === "percent" ? { c1: "%" as const, c2: "%" as const } : dilutionConcentrationUnits;
+
+  useEffect(() => {
+    if (!contentQuery.data) return;
+    setProtocols((contentQuery.data.protocols as ProtocolRecord[]).map(toProtocol));
+    setSamples((contentQuery.data.samples as SampleRecord[]).map(toSample));
+    const databaseCalculators = (contentQuery.data.calculators as CalculatorRecord[]).filter(item => item.active !== 0).map(item => { const category = ["Hóa chất", "Hoá chất", "Dung dịch"].includes(item.category) ? "Chemicals" : ["Cells", "Cell counting", "Cell seeding", "Cell culture"].includes(item.category) ? "Cells" : item.category; const itemConfig = item.config && typeof item.config === "object" ? item.config as { protocolOnly?: boolean } : {};
+      return { id: item.slug, dbId: item.id, config: item.config, name: item.name, category, formula: item.formula, description: item.description, status: item.status, color: category === "Cells" ? "teal" : category === "Chemicals" ? "amber" : "blue", protocolOnly: Boolean(itemConfig.protocolOnly) }; });
+    setCalculatorTools([calculators[0], ...databaseCalculators.filter(item => item.id !== "unit-converter")]);
+    if (!databaseCalculators.some(item => item.id === selectedCalc)) setSelectedCalc(databaseCalculators[0]?.id ?? "");
+  }, [contentQuery.data]);
+
+  useEffect(() => {
+    if (view !== "calculator") return;
+    const selectedTool = calculatorTools.find(tool => tool.id === selectedCalc);
+    if (selectedTool?.protocolOnly) {
+      const firstVisibleTool = calculatorTools.find(tool => !tool.protocolOnly);
+      if (firstVisibleTool) setSelectedCalc(firstVisibleTool.id);
+    }
+  }, [view, calculatorTools, selectedCalc]);
+
+  const calculationResult = useMemo(() => {
+    const values = [parseLocaleNumber(c1), parseLocaleNumber(v1), parseLocaleNumber(c2), parseLocaleNumber(v2)];
+    const positive = (value: number) => Number.isFinite(value) && value > 0;
+    const initialVolume = parseLocaleNumber(dilutionInitialVolume);
+    const dilutionFactor = dilutionMode === "factor" ? parseLocaleNumber(dilutionFactorValue) : (initialVolume + parseLocaleNumber(dilutionAddedVolume)) / initialVolume;
+    if (selectedCalc === "dilution") return calculateDilution(dilutionTarget, { c1: values[0], v1: values[1], c2: values[2], v2: values[3], c1Unit: activeDilutionConcentrationUnits.c1, c2Unit: activeDilutionConcentrationUnits.c2, v1Unit: dilutionVolumeUnits.v1, v2Unit: dilutionVolumeUnits.v2 });
+    if (selectedCalc === "viability") return positive(values[0]) && positive(values[1]) ? (values[0] / values[1]) * 100 : null;
+    if (selectedCalc === "molarity") return positive(values[0]) && positive(values[1]) && positive(values[2]) ? values[0] * (volumeToMl(values[1], volumeUnit) / 1000) * values[2] : null;
+    if (selectedCalc === "manual-cell-count") return (dilutionMode !== "volumes" || (positive(initialVolume) && parseLocaleNumber(dilutionAddedVolume) >= 0)) ? calculateManualCellCount(values[0], parseLocaleNumber(manualCountedSquares), dilutionFactor, positive(parseLocaleNumber(manualSolutionVolume)) ? parseLocaleNumber(manualSolutionVolume) : 1) : null;
+    if (selectedCalc === "cells-needed") return calculateCellsNeeded(values[0], cellUnit, values[1], values[2], volumeUnit);
+    if (selectedCalc === "volume-to-take") return calculateVolumeToTake(values[0], values[1], cellUnit, values[2], volumeUnit, values[3]);
+    if (selectedCalc === "volume-to-add") return Number.isFinite(values[0]) && values[0] >= 0 && Number.isFinite(values[1]) && values[1] >= 0 && positive(values[2]) ? values[2] - values[0] - values[1] : null;
+    return null;
+  }, [c1, v1, c2, v2, volumeUnit, cellUnit, dilutionMode, dilutionFactorValue, dilutionInitialVolume, dilutionAddedVolume, manualSolutionVolume, dilutionTarget, dilutionVolumeUnits, dilutionConcentrationUnits, dilutionConcentrationMode, activeDilutionConcentrationUnits, manualCountedSquares, selectedCalc]);
+
+  const pendingNotificationItems = useMemo(() => ({
+    accounts: (teamQuery.data ?? []).filter(member => member.approvalStatus === "pending"),
+    protocols: protocols.filter(protocol => protocol.status === "Bản nháp"),
+    tools: calculatorTools.filter(tool => tool.status === "Bản nháp" && tool.id !== "unit-converter"),
+    chemicals: (chemicalsQuery.data ?? []).filter(recipe => recipe.status === "Bản nháp"),
+    feedbacks: ((adminFeedbackQuery.data ?? []) as Array<{ id: number; resolvedAt?: Date | string | null; reporterId?: number }>).filter(item => !item.resolvedAt),
+    edits: (pendingEditsQuery.data ?? []) as PendingContentEdit[],
+  }), [teamQuery.data, protocols, calculatorTools, chemicalsQuery.data, adminFeedbackQuery.data, pendingEditsQuery.data]);
+  const notificationItems = useMemo<AdminNotification[]>(() => [
+    ...pendingNotificationItems.accounts.map(member => ({ id: `account:${member.id}`, type: "Account" as const, title: `Duyệt account ${member.name || member.username || "User"}`, creator: member.name || member.username || "User", time: member.lastSignedIn ? new Date(member.lastSignedIn).toLocaleString("vi-VN") : "Vừa cập nhật", view: "adminAccounts" as const })),
+    ...pendingNotificationItems.protocols.map(protocol => ({ id: `protocol:${protocol.id}`, type: "Quy trình" as const, title: `Duyệt quy trình: ${protocol.title}`, creator: protocol.owner, time: protocol.updatedAt, view: "adminAccounts" as const })),
+    ...pendingNotificationItems.tools.map(tool => ({ id: `tool:${tool.id}`, type: "Tool" as const, title: `Duyệt tool: ${tool.name}`, creator: "Người tạo nội dung", time: "Đang chờ duyệt", view: "adminAccounts" as const })),
+    ...pendingNotificationItems.chemicals.map(recipe => ({ id: `chemical:${recipe.id}`, type: "Hoá chất" as const, title: `Duyệt hoá chất: ${recipe.name}`, creator: "Người tạo công thức", time: "Đang chờ duyệt", view: "adminAccounts" as const })),
+    ...pendingNotificationItems.feedbacks.map(feedback => ({ id: `feedback:${feedback.id}`, type: "Phản ánh" as const, title: `Phản ánh #${feedback.id} chưa xử lý`, creator: feedback.reporterId ? `Account #${feedback.reporterId}` : "User", time: "Mới gửi", view: "adminFeedback" as const })),
+    ...pendingNotificationItems.edits.map(edit => ({ id: `edit:${edit.kind}:${edit.id}`, type: edit.kind === "protocol" ? "Quy trình" as const : "Tool" as const, title: `Duyệt bản chỉnh sửa: ${edit.title}`, creator: edit.editorId ? `Account #${edit.editorId}` : "User", time: edit.updatedAt ? new Date(edit.updatedAt).toLocaleString("vi-VN") : "Mới gửi", view: "adminAccounts" as const })),
+  ], [pendingNotificationItems]);
+  const notificationSignature = notificationItems.map(item => item.id).sort().join("|");
+  const visibleNotifications = notificationItems.filter(item => notificationFilter === "all" || item.type === notificationFilter);
+  const unreadNotifications = notificationItems.filter(item => !readNotificationIds.includes(item.id));
+  const hasUnreadNotifications = canReceiveAdminNotifications && unreadNotifications.length > 0;
+  const markNotificationRead = (id: string) => setReadNotificationIds(current => { const next = current.includes(id) ? current : [...current, id]; window.localStorage.setItem("rebiomed-admin-read-notifications", JSON.stringify(next)); return next; });
+  const markAllNotificationsRead = () => { const next = Array.from(new Set([...readNotificationIds, ...notificationItems.map(item => item.id)])); setReadNotificationIds(next); window.localStorage.setItem("rebiomed-admin-read-notifications", JSON.stringify(next)); };
+  const currentView = navItems.find(item => item.id === view);
+  const openProtocol = (protocol: Protocol) => { setSelectedProtocol(protocol); setView("protocols"); };
+  const openSample = (sample: Sample) => { setSelectedSample(sample); setView("samples"); };
+  const renderInlineCalculator = (id: string): ReactNode => {
+    const state = embeddedCalculatorStates[id] ?? createCalculatorDraftState(id);
+    const updateState = (patch: Partial<CalculatorDraftState>) => setEmbeddedCalculatorStates(current => ({ ...current, [id]: { ...(current[id] ?? createCalculatorDraftState(id)), ...patch } }));
+    const result = calculateCalculatorDraft(id, state);
+    return <CalculatorView embedded={true} tools={calculatorTools} onDesign={() => startCreateCalculator()} selectedCalc={id} setSelectedCalc={() => undefined} c1={state.c1} v1={state.v1} c2={state.c2} v2={state.v2} setC1={value => updateState({ c1: value })} setV1={value => updateState({ v1: value })} setC2={value => updateState({ c2: value })} setV2={value => updateState({ v2: value })} dilutionTarget={state.dilutionTarget} setDilutionTarget={value => updateState({ dilutionTarget: value })} dilutionConcentrationMode={state.dilutionConcentrationMode} setDilutionConcentrationMode={value => updateState({ dilutionConcentrationMode: value })} dilutionVolumeUnits={state.dilutionVolumeUnits} setDilutionVolumeUnits={value => updateState({ dilutionVolumeUnits: value })} dilutionConcentrationUnits={state.dilutionConcentrationUnits} setDilutionConcentrationUnits={value => updateState({ dilutionConcentrationUnits: value })} result={result} runCalculation={() => {
+      if (!canEdit) return toast.error("Viewer chỉ có quyền tra cứu.");
+      if (result === null) return toast.error("Tool này cần các trường số hợp lệ hoặc chưa có bộ tính tự động.");
+      const label = `${formatNumber(result)} ${calculatorDraftUnit(id, state)}`;
+      const line = `${calculatorTools.find(calc => calc.id === id)?.name || "Calculation"} · ${label} · ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`;
+      setRecent(current => [line, ...current].slice(0, 4));
+      toast.success("Đã tính và lưu vào lịch sử phiên.");
+    }} recent={recent} clearHistory={clearCalculationHistory} deleteCalculation={deleteCalculation} canCalculate={canEdit} volumeUnit={state.volumeUnit} setVolumeUnit={value => updateState({ volumeUnit: value })} cellUnit={state.cellUnit} setCellUnit={value => updateState({ cellUnit: value })} dilutionMode={state.dilutionMode} setDilutionMode={value => updateState({ dilutionMode: value })} dilutionFactorValue={state.dilutionFactorValue} setDilutionFactorValue={value => updateState({ dilutionFactorValue: value })} dilutionInitialVolume={state.dilutionInitialVolume} setDilutionInitialVolume={value => updateState({ dilutionInitialVolume: value })} dilutionAddedVolume={state.dilutionAddedVolume} setDilutionAddedVolume={value => updateState({ dilutionAddedVolume: value })} manualSolutionVolume={state.manualSolutionVolume} setManualSolutionVolume={value => updateState({ manualSolutionVolume: value })} manualCountedSquares={state.manualCountedSquares} setManualCountedSquares={value => updateState({ manualCountedSquares: value })} />;
+  };
+  const editProtocol = (protocol: Protocol) => { setEditingId(protocol.id); setDraftType("Quy trình"); setDraftCategory(["Hypoxia", "HighPressure", "ProtocolCells", "ProtocolPCR", "ProtocolEvaluation", "ProtocolStaining"].includes(protocol.category) ? protocol.category as ContentCategory : "ProtocolCells"); if (protocol.category === "Hypoxia" || protocol.category === "HighPressure") setSpecialCategory(protocol.category); setDraftTitle(protocol.title); setDraftOwner(protocol.owner); setDraftBody(protocol.summary); setDraftSteps(protocol.steps.length ? protocol.steps : [{ title: "", detail: "", time: "" }]); setSelectedProtocol(null); setView("createProtocol"); };
+  const editSample = (sample: Sample) => { setEditingId(sample.id); setDraftType("Mẫu"); setDraftTitle(sample.name); setDraftBody(sample.description); setSelectedSample(null); setView("admin"); };
+  const startCreateProtocol = (category: "Custom" | SpecialCategory = "Custom") => { setDraftCategory(category === "Custom" ? "ProtocolCells" : category); setDraftType("Quy trình"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setDraftSteps([{ title: "", detail: "", time: "" }]); setView("createProtocol"); };
+  const startCreateSample = () => { setDraftType("Mẫu"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setView("admin"); };
+  const startCreateCalculator = (category: ContentCategory = "Custom") => { setDraftCategory(category); setDraftType("Phương trình"); setEditingId(null); setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody(""); setDraftFormula(""); setDraftInputUnits({}); setDraftOutputUnit(""); setDraftItems([]); setView("admin"); };
+  const editCalculator = (calculator: CalculatorDefinition) => { const config = calculator.config && typeof calculator.config === "object" ? calculator.config as { inputUnits?: Record<string, string>; outputUnit?: string; units?: Record<string, string>; variables?: FormulaItem[] } : {}; const configuredUnits = config.inputUnits ?? config.units ?? {}; let formulaVariables: string[] = []; try { formulaVariables = getFormulaVariables(calculator.formula); } catch { /* legacy display formulas are still editable */ } const items = config.variables?.length ? config.variables : formulaVariables.map(key => ({ key, label: key, unit: configuredUnits[key] ?? "" })); setDraftType("Phương trình"); setDraftCategory((calculator.category as ContentCategory) || "Custom"); setEditingId(String(calculator.dbId ?? calculator.id)); setDraftTitle(calculator.name); setDraftBody(calculator.description); setDraftFormula(calculator.formula); setDraftInputUnits(formulaVariables.length ? configuredUnits : {}); setDraftItems(items); setDraftOutputUnit(config.outputUnit ?? ""); setView("admin"); };
+  const handleSaveDraft = () => {
+    if (!draftTitle.trim()) return toast.error("Vui lòng nhập tên nội dung.");
+    if (draftType === "Quy trình" && !draftOwner.trim()) return toast.error("Vui lòng nhập tên người viết quy trình.");
+    if (!canEdit) return toast.error("Viewer chỉ có quyền tra cứu.");
+    if (draftType === "Phương trình") {
+      if (!draftFormula.trim()) return toast.error("Nhập công thức trước khi lưu tool.");
+      let variables: string[];
+      try { variables = getFormulaVariables(draftFormula); } catch (error) { return toast.error(error instanceof Error ? error.message : "Công thức không hợp lệ."); }
+      const formulaItems = variables.map(variable => draftItems.find(item => item.key === variable) ?? { key: variable, label: variable, unit: draftInputUnits[variable] ?? "" });
+      const inputUnits = Object.fromEntries(formulaItems.map(item => [item.key, item.unit]));
+      if (editingId) {
+        const dbId = calculatorTools.find(calculator => String(calculator.dbId) === editingId || calculator.id === editingId)?.dbId;
+        if (!dbId) return toast.error("Không tìm thấy công cụ cần sửa.");
+        updateCalculatorMutation.mutate({ id: dbId, name: draftTitle, formula: draftFormula, description: draftBody, category: draftCategory as "Chemicals" | "Cells" | "PCR" | "Custom" | "Hypoxia" | "HighPressure", inputUnits, outputUnit: draftOutputUnit, variables: formulaItems });
+      } else createCalculatorMutation.mutate({ name: draftTitle, formula: draftFormula, description: draftBody, category: draftCategory as "Chemicals" | "Cells" | "PCR" | "Custom" | "Hypoxia" | "HighPressure", inputUnits, outputUnit: draftOutputUnit, variables: formulaItems });
+    } else {
+      const kind = draftType === "Quy trình" ? "protocol" : "sample";
+      const steps = kind === "protocol" ? draftSteps.filter(step => step.title.trim()) : undefined;
+      if (editingId) updateDraftMutation.mutate({ id: Number(editingId), kind, title: draftTitle, body: draftBody, owner: draftOwner, category: draftCategory as "Custom" | "Hypoxia" | "HighPressure" | "ProtocolCells" | "ProtocolPCR" | "ProtocolEvaluation" | "ProtocolStaining", steps });
+      else createDraftMutation.mutate({ kind, title: draftTitle, body: draftBody, owner: draftOwner, category: kind === "protocol" ? (draftCategory as "Custom" | "Hypoxia" | "HighPressure" | "ProtocolCells" | "ProtocolPCR" | "ProtocolEvaluation" | "ProtocolStaining") : "Custom", steps });
+    }
+    setEditingId(null);
+    setDraftTitle(""); setDraftOwner("Lab editor"); setDraftBody("");
+  };
+  const confirmTwice = (message: string) => window.confirm(`${message}\n\nXác nhận lần 1/2`) && window.confirm(`${message}\n\nXác nhận lần 2/2 — thao tác không thể hoàn tác.`);
+  const clearCalculationHistory = () => { if (recent.length && confirmTwice("Xoá toàn bộ lịch sử phép tính?")) setRecent([]); };
+  const deleteCalculation = (index: number) => { if (confirmTwice("Xoá phép tính này khỏi lịch sử?")) setRecent(current => current.filter((_, position) => position !== index)); };
+  const handleEditCalculator = (id: string) => { const calculator = calculatorTools.find(item => item.id === id); if (calculator) editCalculator(calculator); };
+  const handleDeleteCalculator = (id: string) => { const dbId = calculatorTools.find(calculator => calculator.id === id)?.dbId; if (isAdmin && dbId && confirmTwice("Xoá công thức tính này?")) deleteCalculatorMutation.mutate({ id: dbId }); };
+  const handleDeleteSample = (id: string) => { if (!isAdmin) return toast.error("Chỉ Admin mới có quyền xóa mục thông tin."); if (confirmTwice("Xoá mục thông tin này khỏi hệ thống?")) deleteSampleMutation.mutate({ id: Number(id) }); };
+  const handleDeleteProtocol = (id: string) => { if (!isAdmin) return toast.error("Chỉ Admin mới có quyền xóa quy trình."); if (confirmTwice("Xoá quy trình này khỏi hệ thống?")) adminDeleteProtocolMutation.mutate({ id: Number(id) }); };
+  const openCalculator = (id: string) => {
+    setSelectedCalc(id);
+    setView("calculator");
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      window.setTimeout(() => document.querySelector(".calculator-layout, .calculator-special-layout")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+    }
+  };
+  const attachCalculator = (id: string) => {
+    setSelectedCalc(id);
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      window.setTimeout(() => document.querySelector(".attached-tool-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+    }
+  };
+  const selectCalculator = (id: string) => {
+    setSelectedCalc(id);
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      window.setTimeout(() => document.querySelector(".calc-workbench")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+    }
+  };
+  const runCalculation = () => { if (!canEdit) return toast.error("Viewer chỉ có quyền tra cứu."); if (calculationResult === null) return toast.error("Tool này cần các trường số hợp lệ hoặc chưa có bộ tính tự động."); if (selectedCalc === "volume-to-add" && calculationResult < 0) return toast.error("Bạn cần phải rút bớt dung tích đấy"); const unit = selectedCalc === "viability" ? "%" : selectedCalc === "molarity" ? "g" : selectedCalc === "dilution" ? (dilutionTarget.startsWith("C") ? activeDilutionConcentrationUnits[dilutionTarget.toLowerCase() as "c1" | "c2"] : dilutionVolumeUnits[dilutionTarget.toLowerCase() as "v1" | "v2"]) : selectedCalc === "volume-to-take" || selectedCalc === "volume-to-add" ? volumeUnit : selectedCalc === "manual-cell-count" ? "cell" : selectedCalc === "cells-needed" ? "cells" : volumeUnit; const label = `${formatNumber(calculationResult)} ${unit}`; const line = `${calculatorTools.find(calc => calc.id === selectedCalc)?.name || "Calculation"} · ${label} · ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`; setRecent(current => [line, ...current].slice(0, 4)); toast.success("Đã tính và lưu vào lịch sử phiên."); };
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
+        <div className="sidebar-top">
+          <div className="brand-lockup"><span className="brand-mark">RP</span><span className="brand-copy"><span className="brand-name">Rebiomed Protocol</span><small>From Researchers to Researchers</small></span></div>
+          <button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="Đóng menu"><X size={18} /></button>
+          <div className="workspace-badge"><div><span className="status-dot" /> PRIVATE LAB WORKSPACE</div><span className="workspace-version">Version {APP_VERSION}</span></div>
+        </div>
+        <div className="nav-caption">Workspace</div>
+        <nav className="main-nav">
+          {navItems.filter(item => (item.id !== "adminAccounts" && item.id !== "adminFeedback") || isAdmin).map(item => {
+            const Icon = item.icon;
+            const hasSubnav = item.id === "special" || item.id === "chemicals" || item.id === "masterMix";
+            const isExpanded = Boolean(expandedNavSections[item.id]);
+            const isActive = view === item.id || (item.id === "chemicals" && (view === "chemicalStock" || view === "chemicalIcc" || view === "chemicalCdna"));
+            return <div key={item.id} className="nav-section">
+              <div className="nav-item-row">
+                <button className={`nav-item ${isActive ? "active" : ""}`} onClick={() => { setView(item.id); setSelectedProtocol(null); setSelectedSample(null); setMobileNav(false); }}><Icon size={17} /><span>{item.label}</span></button>
+                {hasSubnav && <button type="button" className="nav-collapse-toggle" onClick={() => setExpandedNavSections(current => ({ ...current, [item.id]: !current[item.id] }))} aria-label={`${isExpanded ? "Thu gọn" : "Mở rộng"} mục ${item.label}`} aria-expanded={isExpanded}><ChevronDown className={isExpanded ? "is-expanded" : ""} size={14} /></button>}
+              </div>
+              {item.id === "special" && isExpanded && <div className="special-subnav">{(["Hypoxia", "HighPressure"] as const).map(key => <button key={key} className={view === "special" && specialCategory === key ? "active" : ""} onClick={() => { setSpecialCategory(key); setView("special"); setMobileNav(false); }}>{SPECIAL_CATEGORY_LABEL[key]}</button>)}</div>}
+              {item.id === "chemicals" && isExpanded && <div className="special-subnav chemical-subnav"><button className={view === "chemicals" ? "active" : ""} onClick={() => { setView("chemicals"); setMobileNav(false); }}>Hoá chất</button><button className={view === "chemicalStock" ? "active" : ""} onClick={() => { setView("chemicalStock"); setMobileNav(false); }}>Hoá chất stock</button><button className={view === "chemicalIcc" ? "active" : ""} onClick={() => { setView("chemicalIcc"); setMobileNav(false); }}>Nhuộm ICC</button></div>}
+              {item.id === "masterMix" && isExpanded && <div className="special-subnav chemical-subnav"><button className={view === "masterMix" && masterMixTab === "cdna" ? "active" : ""} onClick={() => { setMasterMixTab("cdna"); setView("masterMix"); setMobileNav(false); }}>Master Mix cDNA</button><button className={view === "masterMix" && masterMixTab === "qdna" ? "active" : ""} onClick={() => { setMasterMixTab("qdna"); setView("masterMix"); setMobileNav(false); }}>Master Mix qDNA</button></div>}
+            </div>;
+          })}
+        </nav>
+        <div className="sidebar-rule" />
+        <div className="sidebar-bottom"><div className="sync-note"><span className="sync-icon"><Check size={12} /></span><span><strong>Đã đồng bộ</strong><small>{contentQuery.isFetching ? "Đang cập nhật…" : "Chỉnh sửa trực tiếp"}</small><small className="sync-presenter">Presented by W.Stratos with Luv :3</small><a className="github-project-link" href="https://github.com/WStratos1101/Rebiomed-Lab" target="_blank" rel="noreferrer" aria-label="Mở repository Rebiomed-Lab trên GitHub"><Github size={14} /></a></span></div></div>
+      </aside>
+      {mobileNav && <button className="mobile-overlay" onClick={() => setMobileNav(false)} aria-label="Đóng menu" />}
+
+      <main className="main-canvas">
+        <header className="topbar"><div className="topbar-left"><button className="mobile-menu" onClick={() => setMobileNav(true)} aria-label="Mở menu"><Menu size={20} /></button><div className="breadcrumb"><span>Rebiomed Protocol</span><ChevronRight size={13} /><strong>{currentView?.label}</strong></div></div><div className="topbar-actions">{!user && <div className="topbar-auth-actions"><button type="button" className="topbar-auth-button" onClick={() => { setAuthIntent("register"); setView("auth"); }}>Đăng ký User</button><button type="button" className="topbar-auth-button primary" onClick={() => { setAuthIntent("login"); setView("auth"); }}>Đăng nhập</button></div>}{canReceiveAdminNotifications && <div className="notification-menu"><button type="button" className={`notification-trigger ${hasUnreadNotifications ? "has-unread" : ""}`} onClick={() => { setNotificationPanelOpen(current => !current); setDismissedNotificationSignature(notificationSignature); }} aria-label="Mở trung tâm thông báo Admin" aria-expanded={notificationPanelOpen}><Bell size={18} />{hasUnreadNotifications && <span className="notification-dot" aria-label="Có thông báo mới">{unreadNotifications.length}</span>}</button>{notificationPanelOpen && <div className="notification-popover notification-center"><div className="notification-popover-head"><strong>Trung tâm thông báo</strong><small>{unreadNotifications.length ? `${unreadNotifications.length} thông báo chưa đọc` : "Đã xem tất cả thông báo"}</small></div><div className="notification-filters"><button className={notificationFilter === "all" ? "active" : ""} onClick={() => setNotificationFilter("all")}>Tất cả</button>{(["Account", "Quy trình", "Tool", "Hoá chất", "Phản ánh"] as NotificationType[]).map(type => <button key={type} className={notificationFilter === type ? "active" : ""} onClick={() => setNotificationFilter(type)}>{type}</button>)}</div><button type="button" className="notification-mark-all" onClick={markAllNotificationsRead}>Đánh dấu tất cả đã đọc</button><div className="notification-list">{visibleNotifications.map(item => <button type="button" key={item.id} className={`notification-item ${readNotificationIds.includes(item.id) ? "read" : "unread"}`} onClick={() => { markNotificationRead(item.id); setView(item.view); setNotificationPanelOpen(false); }}><span className="notification-item-main"><strong>{item.title}</strong><small>Người tạo: {item.creator} · {item.time}</small></span><span className="notification-item-type">{item.type}</span></button>)}{visibleNotifications.length === 0 && <p className="notification-empty">Không có thông báo trong bộ lọc này.</p>}</div></div>}</div>}<div className="account-menu"><button className="topbar-avatar" onClick={() => setAccountMenuOpen(current => !current)} aria-label="Mở tài khoản" aria-expanded={accountMenuOpen}><UserAvatar name={user?.name ?? (isAdmin ? "Admin" : "User")} /></button>{accountMenuOpen && <div className="account-popover"><div className="account-popover-head"><UserAvatar name={user?.name ?? (isAdmin ? "Admin" : "User")} /><div><strong>{user?.name || (isAdmin ? "Admin" : "Khách")}</strong><small>{user?.username?.toLowerCase() === "wstratos" ? "Tài khoản quản trị" : user?.email || (isAdmin ? "Tài khoản quản trị" : "Chưa đăng nhập")}</small></div></div>{user ? <><button onClick={() => { setView(isAdmin ? "adminAccounts" : "userAccount"); setAccountMenuOpen(false); }}>Trang cá nhân</button><button className="account-logout" onClick={() => { logoutMutation.mutate(); setAccountMenuOpen(false); }}>Đăng xuất</button></> : <button onClick={() => { setAuthIntent("login"); setView("auth"); setAccountMenuOpen(false); }}>Đăng nhập / Đăng ký</button>}</div>}</div></div></header>
+        <div className="page-wrap">
+          {view === "overview" && <Suspense fallback={lazyFallback}><ExperimentJournal userId={user?.id} userName={user?.name} /></Suspense>}
+          {view === "feedback" && <Suspense fallback={lazyFallback}><FeedbackView userId={user?.id} userName={user?.name} /></Suspense>}
+          {view === "protocols" && contentQuery.isError && <section className="content-load-error" role="alert"><AlertTriangle size={18} /><div><strong>Không thể tải kho quy trình</strong><p>Dữ liệu trên màn hình không bị thay bằng danh sách trống. Hãy tải lại; nếu lỗi tiếp diễn, kiểm tra kết nối máy chủ.</p></div><Button variant="outline" onClick={() => contentQuery.refetch()}>Tải lại dữ liệu</Button></section>}
+          {view === "protocols" && <ProtocolsView calculators={calculatorTools} onUseCalculator={openCalculator} onAttachCalculator={attachCalculator} renderCalculator={renderInlineCalculator} loading={contentQuery.isLoading} protocols={protocols} selected={selectedProtocol} setSelected={setSelectedProtocol} openProtocol={openProtocol} onEdit={editProtocol} onDelete={handleDeleteProtocol} onCreate={() => startCreateProtocol()} canEdit={canEdit} canEditApproved={isAdmin} canDelete={isAdmin || selectedProtocol?.status === "Bản nháp"} />}
+          {view === "samples" && <SamplesView samples={samples} selected={selectedSample} setSelected={setSelectedSample} openSample={openSample} onCreate={startCreateSample} onDelete={id => deleteSampleMutation.mutate({ id: Number(id) })} canManageApproved={isAdmin} />}
+          {view === "calculator" && <CalculatorView tools={calculatorTools} onDesign={() => startCreateCalculator()} selectedCalc={selectedCalc} setSelectedCalc={selectCalculator} c1={c1} v1={v1} c2={c2} v2={v2} setC1={setC1} setV1={setV1} setC2={setC2} setV2={setV2} dilutionTarget={dilutionTarget} setDilutionTarget={setDilutionTarget} dilutionConcentrationMode={dilutionConcentrationMode} setDilutionConcentrationMode={setDilutionConcentrationMode} dilutionVolumeUnits={dilutionVolumeUnits} setDilutionVolumeUnits={setDilutionVolumeUnits} dilutionConcentrationUnits={dilutionConcentrationUnits} setDilutionConcentrationUnits={setDilutionConcentrationUnits} result={calculationResult} runCalculation={runCalculation} recent={recent} clearHistory={clearCalculationHistory} deleteCalculation={deleteCalculation} canCalculate={canEdit} volumeUnit={volumeUnit} setVolumeUnit={setVolumeUnit} cellUnit={cellUnit} setCellUnit={setCellUnit} dilutionMode={dilutionMode} setDilutionMode={setDilutionMode} dilutionFactorValue={dilutionFactorValue} setDilutionFactorValue={setDilutionFactorValue} dilutionInitialVolume={dilutionInitialVolume} setDilutionInitialVolume={setDilutionInitialVolume} dilutionAddedVolume={dilutionAddedVolume} setDilutionAddedVolume={setDilutionAddedVolume} manualSolutionVolume={manualSolutionVolume} manualCountedSquares={manualCountedSquares} setManualCountedSquares={setManualCountedSquares} setManualSolutionVolume={setManualSolutionVolume} />}
+          {view === "qpcr" && <Suspense fallback={lazyFallback}><QpcrCalculationView /></Suspense>}
+          {view === "chemicals" && <Suspense fallback={lazyFallback}><ChemicalMixingView initialTab="chemicals" isAdmin={isAdmin} userId={user?.id} /></Suspense>}
+          {view === "chemicalStock" && <Suspense fallback={lazyFallback}><ChemicalMixingView initialTab="stock" isAdmin={isAdmin} userId={user?.id} /></Suspense>}
+          {view === "chemicalIcc" && <Suspense fallback={lazyFallback}><ChemicalMixingView initialTab="icc" isAdmin={isAdmin} userId={user?.id} /></Suspense>}
+          {view === "masterMix" && <Suspense fallback={lazyFallback}><ChemicalMixingView initialTab={masterMixTab === "cdna" ? "master-cdna" : "master-qdna"} isAdmin={isAdmin} userId={user?.id} /></Suspense>}
+          {view === "chemicalCdna" && <Suspense fallback={lazyFallback}><ChemicalMixingView initialTab="cdna" isAdmin={isAdmin} userId={user?.id} /></Suspense>}
+          {view === "special" && <Suspense fallback={lazyFallback}><SpecialExperimentsView protocols={protocols} tools={calculatorTools} category={specialCategory} setCategory={setSpecialCategory} openProtocol={protocol => { const full = protocols.find(item => item.id === protocol.id); if (full) openProtocol(full); }} openTool={openCalculator} createProtocol={startCreateProtocol} createTool={startCreateCalculator} /></Suspense>}
+          {view === "admin" && <AdminView isAdmin={isAdmin} protocols={protocols} samples={samples} onEditProtocol={editProtocol} draftOwner={draftOwner} setDraftOwner={setDraftOwner} calculators={calculatorTools} onEditCalculator={handleEditCalculator} onDeleteCalculator={handleDeleteCalculator} onCreateProtocol={() => startCreateProtocol()} draftType={draftType} setDraftType={setDraftType} draftTitle={draftTitle} setDraftTitle={setDraftTitle} draftBody={draftBody} setDraftBody={setDraftBody} draftFormula={draftFormula} setDraftFormula={setDraftFormula} draftInputUnits={draftInputUnits} setDraftInputUnits={setDraftInputUnits} draftItems={draftItems} setDraftItems={setDraftItems} draftOutputUnit={draftOutputUnit} setDraftOutputUnit={setDraftOutputUnit} onSave={handleSaveDraft} draftCategory={draftCategory} setDraftCategory={setDraftCategory} onDeleteProtocol={handleDeleteProtocol} onDeleteSample={handleDeleteSample} onEditSample={editSample} />}
+
+          <>{view === "auth" && <UnifiedAuthView key={authIntent} initialRegistering={authIntent === "register"} onUserSuccess={async () => { await authQuery.refetch(); setView("userAccount"); }} onAdminSuccess={async () => { await authQuery.refetch(); setView("adminAccounts"); }} />}</>
+          {view === "userAccount" && user && !isAdmin && <UserAccountView user={user} onSave={(email, currentPassword, newPassword) => updateProfileMutation.mutate({ email, currentPassword, newPassword: newPassword || undefined })} onLogout={() => logoutMutation.mutate()} />}
+          {view === "adminAccounts" && isAdmin && <><AdminAccountsView canManagePasswords={user?.username?.toLowerCase() === "wstratos"} viewerId={user?.id ?? 0} team={(teamQuery.data ?? []).map(member => ({ ...member, name: member.name ?? "(chưa đặt tên)", email: member.email ?? "", lastActive: member.lastSignedIn ? new Date(member.lastSignedIn).toLocaleDateString("vi-VN") : "—", role: member.role as TeamMember["role"] }))} onApprovalChange={(id, status) => updateApprovalMutation.mutate({ id, approvalStatus: status })} onRoleChange={(id, roleValue) => updateRoleMutation.mutate({ id, role: roleValue })} onRevokeAccess={id => revokeAccessMutation.mutate({ id })} onDeleteUser={id => deleteUserMutation.mutate({ id })} onResetPassword={(id, password) => resetPasswordMutation.mutate({ id, password })} /><AdminReviewView protocols={protocols} samples={samples} calculators={calculatorTools} onApproveProtocol={id => approveProtocolMutation.mutate({ id })} onRejectProtocol={id => { if (window.confirm("Không duyệt và xoá quy trình này? Thao tác này không thể hoàn tác.")) rejectProtocolMutation.mutate({ id }); }} onEditProtocol={id => { const item = protocols.find(protocol => Number(protocol.id) === id); if (item) editProtocol(item); }} onApproveSample={id => approveSampleMutation.mutate({ id })} onRejectSample={id => { if (confirmTwice("Không duyệt và xoá mục thông tin này?")) rejectSampleMutation.mutate({ id }); }} onEditSample={id => { const item = samples.find(sample => Number(sample.id) === id); if (item) editSample(item); }} onApproveCalculator={id => approveCalculatorMutation.mutate({ id })} onRejectCalculator={id => { if (confirmTwice("Không duyệt và xoá công cụ này?")) rejectCalculatorMutation.mutate({ id }); }} onEditCalculator={id => { const item = calculatorTools.find(calculator => calculator.dbId === id); if (item) handleEditCalculator(item.id); }} pendingEdits={(pendingEditsQuery.data ?? []) as PendingContentEdit[]} onApprovePendingEdit={(kind, id) => approvePendingEditMutation.mutate({ kind, id })} onRejectPendingEdit={(kind, id) => { if (confirmTwice("Không duyệt bản chỉnh sửa này?")) rejectPendingEditMutation.mutate({ kind, id }); }} /></>}
+          {view === "adminFeedback" && isAdmin && <Suspense fallback={lazyFallback}><AdminFeedbackView admins={(teamQuery.data ?? []).filter(member => (member.role === "admin" || member.role === "supporter") && member.approvalStatus === "approved").map(member => ({ id: member.id, name: member.name ?? "", username: member.username }))} team={(teamQuery.data ?? []).map(member => ({ id: member.id, name: member.name ?? "", username: member.username }))} /></Suspense>}
+          {view === "createProtocol" && canEdit && <ProtocolEditorPage calculators={calculatorTools} title={draftTitle} owner={draftOwner} body={draftBody} steps={draftSteps} category={draftCategory} setCategory={setDraftCategory} setTitle={setDraftTitle} setOwner={setDraftOwner} setBody={setDraftBody} setSteps={setDraftSteps} onSave={handleSaveDraft} onCancel={() => setView(draftCategory === "Hypoxia" || draftCategory === "HighPressure" ? "special" : "protocols")} />}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: React.ReactNode; description: string; action?: React.ReactNode }) {
+  return <div className="page-intro"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>;
+}
+
+function Overview({ userName, role, protocols, samples, openProtocol, openSample, setView }: { userName?: string | null; role: "admin" | "user"; protocols: Protocol[]; samples: Sample[]; openProtocol: (p: Protocol) => void; openSample: (s: Sample) => void; setView: (v: View) => void }) {
+  return <>
+    <PageIntro eyebrow={`02 OCTOBER 2026 · LAB CONTROL DESK · ${role.toUpperCase()}`} title={<>Chào {userName?.split(" ").slice(-1)[0] || "bạn"}, <em>mình bắt đầu nhé.</em></>} description="Mọi thứ đội ngũ cần để tái lập một thí nghiệm — ở đúng nơi, đúng phiên bản." action={<div className="intro-actions"><span className="last-sync"><span className="status-dot" /> Live sync</span><Button onClick={() => setView("calculator")} className="primary-cta"><Calculator size={16} /> Mở calculator</Button></div>} />
+    <section className="content-panel welcome-card"><div><span className="panel-index">WELCOME / LAB DESK</span><p>Chào {userName?.trim() || "bạn"}. Hãy bắt đầu thí nghiệm và đón chờ những phát hiện mới</p></div><Sparkles size={24} /></section>
+    <div className="overview-grid"><section className="content-panel focus-panel"><div className="panel-heading"><div><span className="panel-index">01 / FOCUS</span><h2>Quy trình dùng gần đây</h2></div><button className="text-button" onClick={() => setView("protocols")}>Xem tất cả <ArrowLeft size={14} className="flip-x" /></button></div><div className="protocol-list">{protocols.slice(0, 3).map((protocol, index) => <button className="protocol-row" key={protocol.id} onClick={() => openProtocol(protocol)}><span className="row-number">0{index + 1}</span><span className="row-main"><strong>{protocol.title}</strong><span>{protocol.category} <i>·</i> {protocol.duration}</span></span><span className={`status-pill ${protocol.status === "Đã duyệt" ? "approved" : "draft"}`}>{protocol.status}</span><ChevronRight size={16} /></button>)}</div></section><section className="content-panel sample-panel"><div className="panel-heading"><div><span className="panel-index">02 / SAMPLE INDEX</span><h2>Mẫu mới cập nhật</h2></div><button className="icon-button" onClick={() => setView("samples")}><MoreHorizontal size={18} /></button></div><div className="sample-stack">{samples.slice(0, 3).map(sample => <button className="sample-row" key={sample.id} onClick={() => openSample(sample)}><span className="sample-symbol"><Beaker size={16} /></span><span><strong>{sample.name}</strong><small>{sample.code} · {sample.updatedAt}</small></span><ChevronRight size={15} /></button>)}</div><div className="mini-theory"><Sparkles size={15} /><span><strong>Lab note</strong> — “Matrix matching” giúp giảm bias khi đọc assay màu.</span></div></section></div>
+    <section className="quick-tools"><div className="quick-title"><span className="panel-index">03 / QUICK ACCESS</span><h2>Công cụ & tri thức</h2><p>Đi thẳng đến phần bạn cần trong ca làm việc.</p></div><button onClick={() => setView("calculator")} className="tool-card tool-teal"><span className="tool-icon"><Calculator size={19} /></span><strong>Pha loãng nồng độ</strong><small>C₁V₁ = C₂V₂</small><ChevronRight size={16} /></button><button onClick={() => setView("protocols")} className="tool-card tool-cream"><span className="tool-icon"><BookOpen size={19} /></span><strong>Protocol handbook</strong><small>Guides · notes · versions</small><ChevronRight size={16} /></button><button onClick={() => setView("samples")} className="tool-card tool-ink"><span className="tool-icon"><Archive size={19} /></span><strong>Sample theory</strong><small>Properties · references</small><ChevronRight size={16} /></button></section>
+  </>;
+}
+
+function ProtocolsView({ calculators, onUseCalculator, onAttachCalculator, renderCalculator, loading, protocols, selected, setSelected, openProtocol, onEdit, onDelete, onCreate, canEdit, canEditApproved, canDelete }: { calculators: CalculatorDefinition[]; onUseCalculator: (id: string) => void; onAttachCalculator: (id: string) => void; renderCalculator: (id: string) => ReactNode; loading: boolean; protocols: Protocol[]; selected: Protocol | null; setSelected: (p: Protocol | null) => void; openProtocol: (p: Protocol) => void; onEdit: (protocol: Protocol) => void; onDelete: (id: string) => void; onCreate: () => void; canEdit: boolean; canEditApproved: boolean; canDelete: boolean }) {
+  if (selected) return <ProtocolDetail protocol={selected} calculators={calculators} onUseCalculator={onUseCalculator} onAttachCalculator={onAttachCalculator} renderCalculator={renderCalculator} onBack={() => setSelected(null)} onEdit={() => onEdit(selected)} onDelete={onDelete} canEdit={canEdit} canDelete={canDelete} />;
+  const grouped = PROTOCOL_CATEGORY_ORDER.map(category => ({ category, items: protocols.filter(protocol => protocolCategory(protocol.category) === category) })).filter(group => group.items.length);
+  return <><PageIntro eyebrow="PROTOCOL HANDBOOK" title={<>Quy trình <em>đã được kiểm chứng.</em></>} description="Các phiên bản thao tác được review và lưu theo từng assay, để mỗi lần chạy đều có cùng một điểm bắt đầu." action={canEdit ? <Button className="primary-cta" onClick={onCreate}><Plus size={16} /> Thêm quy trình</Button> : <span className="last-sync"><ShieldCheck size={13} /> Viewer · read only</span>} /><div className="filter-row"><div className="filter-label"><ClipboardList size={15} /> Danh mục quy trình</div><div className="filter-chips"><button className="filter-chip active">Tất cả</button><button className="filter-chip">Đã duyệt <span>{protocols.filter(item => item.status === "Đã duyệt").length}</span></button><button className="filter-chip">Bản nháp <span>{protocols.filter(item => item.status === "Bản nháp").length}</span></button></div></div><div className="protocol-category-groups">{grouped.map(group => <section className="protocol-category-group" key={group.category}><div className="protocol-category-heading"><h2><strong>{PROTOCOL_CATEGORY_LABEL[group.category]}</strong></h2></div><div className="protocol-cards">{group.items.map(protocol => <button key={protocol.id} className="protocol-card" onClick={() => openProtocol(protocol)}><div className="protocol-card-top"><span className="protocol-tag">{protocol.tag}</span><span className={`status-pill ${protocol.status === "Đã duyệt" ? "approved" : "draft"}`}>{protocol.status}</span></div><h2>{protocol.title}</h2><p>{protocol.summary}</p><div className="protocol-card-meta"><span><Clock3 size={13} /> {protocol.duration}</span><span><FilePenLine size={13} /> {protocol.version}</span><span className="meta-owner"><UserRound size={13} /> {protocol.owner}</span><ChevronRight size={16} /></div></button>)}</div></section>)}</div>{!grouped.length && <div className="empty-state"><AlertTriangle size={24} /><h3>{loading ? "Đang tải kho quy trình…" : "Chưa có quy trình trong kho"}</h3><p>{loading ? "Đang đồng bộ dữ liệu đã lưu từ máy chủ." : "Không có quy trình nào được trả về từ kho dữ liệu."}</p></div>}</>;
+}
+function ProtocolNotes({ notes }: { notes: ProtocolNote[] }) {
+  return <>{notes.map((note, index) => typeof note === "string" ? <li key={`note-${index}`}>{note}</li> : <li key={`table-${index}`} className="protocol-note-table-item"><strong>{note.title}</strong><div className="protocol-note-table-wrap"><table className="protocol-note-table"><thead><tr>{note.columns.map((column, columnIndex) => <th key={`${column}-${columnIndex}`}>{column}</th>)}</tr></thead><tbody>{note.rows.map((row, rowIndex) => <tr key={`row-${rowIndex}`}>{note.columns.map((_, columnIndex) => <td key={`cell-${rowIndex}-${columnIndex}`}>{row[columnIndex] ?? ""}</td>)}</tr>)}</tbody></table></div></li>)}</>;
+}
+function ProtocolDetail({ protocol, calculators, onUseCalculator, onAttachCalculator, renderCalculator, onBack, onEdit, onDelete, canEdit, canDelete }: { protocol: Protocol; calculators: CalculatorDefinition[]; onUseCalculator: (id: string) => void; onAttachCalculator: (id: string) => void; renderCalculator: (id: string) => ReactNode; onBack: () => void; onEdit: () => void; onDelete: (id: string) => void; canEdit: boolean; canDelete: boolean }) {
+  const [attachedToolIds, setAttachedToolIds] = useState<string[]>([]);
+  const [attachedStepKey, setAttachedStepKey] = useState<number | null>(null);
+  const [attachedStepTitle, setAttachedStepTitle] = useState("");
+  const attach = (id: string, stepIndex: number, stepTitle: string) => {
+    setAttachedToolIds(current => {
+      if (attachedStepKey !== stepIndex) return [id];
+      if (current.includes(id)) return current.filter(toolId => toolId !== id);
+      if (current.length >= 3) return current;
+      return [...current, id];
+    });
+    setAttachedStepKey(stepIndex);
+    setAttachedStepTitle(stepTitle);
+    onAttachCalculator(id);
+  };
+  const closeTool = (id: string) => setAttachedToolIds(current => current.filter(toolId => toolId !== id));
+  const attachedTools = attachedToolIds.map(id => calculators.find(tool => tool.id === id)).filter((tool): tool is CalculatorDefinition => Boolean(tool));
+  return <><button className="back-link" onClick={onBack}><ArrowLeft size={15} /> Tất cả quy trình</button><div className="detail-header"><div><span className="protocol-tag">{protocol.tag}</span><h1>{protocol.title}</h1><p>{protocol.summary}</p><div className="detail-meta"><span className={`status-pill ${protocol.status === "Đã duyệt" ? "approved" : "draft"}`}>{protocol.status}</span><span>Version {protocol.version}</span><span>Updated {protocol.updatedAt}</span><span>Owner {protocol.owner}</span></div></div><div className="detail-actions">{canEdit && <Button variant="outline" onClick={onEdit}><FilePenLine size={15} /> Chỉnh sửa</Button>}{canDelete && <button className="icon-button danger" onClick={() => onDelete(protocol.id)}><Trash2 size={16} /></button>}</div></div><div className={`detail-layout ${attachedTools.length ? "with-attached-tools" : ""}`}><section className="content-panel steps-panel"><div className="panel-heading"><div><span className="panel-index">RUNBOOK / SEQUENCE</span><h2>Trình tự thực hiện</h2></div><span className="duration-chip"><Clock3 size={14} /> {protocol.duration}</span></div><div className="step-list">{protocol.steps.map((step, index) => <div className="step-item" key={`${index}-${step.title}`}><div className="step-marker"><span>0{index + 1}</span></div><div className="step-content"><div className="step-heading"><h3>{step.title}</h3><span>{step.time}</span></div><p>{step.detail}</p>{step.calculatorIds?.some(Boolean) ? <div className="step-linked-tools"><small>CÔNG CỤ LIÊN KẾT · {Math.min(step.calculatorIds.filter(Boolean).length, 3)} TOOL · ĐANG MỞ {attachedStepKey === index ? attachedToolIds.length : 0}/3</small>{step.calculatorIds.slice(0, 3).map(id => { const tool = calculators.find(item => item.id === id); const isOpen = attachedStepKey === index && attachedToolIds.includes(id); return tool ? <button type="button" key={id} className={isOpen ? "active" : ""} aria-pressed={isOpen} onClick={() => attach(id, index, step.title)}><Calculator size={13} />{tool.name}<ChevronRight size={13} /></button> : null; })}</div> : null}</div></div>)}</div></section>{attachedTools.length ? <AttachedCalculatorPanel tools={attachedTools} stepTitle={attachedStepTitle} calculators={attachedTools.map(tool => renderCalculator(tool.id))} notes={protocol.notes} onClose={closeTool} /> : <aside className="detail-side"><div className="content-panel note-panel"><div className="panel-index">CHECK BEFORE RUN</div><h3>Lưu ý quan trọng</h3><ul><ProtocolNotes notes={protocol.notes} /></ul></div></aside>}</div></>;
+}
+function AttachedCalculatorPanel({ tools, stepTitle, calculators, notes, onClose }: { tools: CalculatorDefinition[]; stepTitle: string; calculators: ReactNode[]; notes: ProtocolNote[]; onClose: (id: string) => void }) {
+  return <section className="content-panel attached-tool-panel"><div className="panel-heading"><div><span className="panel-index">ATTACHED TOOLS / READY TO USE</span><h2>{tools.length} công cụ đang mở</h2><p>Bấm từng tool trong bước để mở riêng; có thể mở đồng thời tối đa 3 tool.</p></div><Calculator size={21} /></div><div className="attached-tool-linked-step"><small>ĐƯỢC GẮN VỚI BƯỚC</small><strong>{stepTitle}</strong></div><div className="attached-tool-stack">{tools.map((tool, index) => <div className="attached-tool-card" key={tool.id}><div className="attached-tool-card-heading"><div><span className="panel-index">TOOL {index + 1}</span><h3>{tool.name}</h3><p>{tool.description}</p></div><div className="attached-tool-card-actions"><Calculator size={18} /><button type="button" className="icon-button" onClick={() => onClose(tool.id)} aria-label={`Đóng ${tool.name}`}><X size={15} /></button></div></div><div className="attached-tool-formula"><small>CÔNG THỨC</small><code>{tool.formula}</code></div><div className="attached-tool-live">{calculators[index]}</div></div>)}</div><div className="content-panel note-panel attached-tool-notes"><div className="panel-index">CHECK BEFORE RUN</div><h3>Lưu ý quan trọng</h3><ul><ProtocolNotes notes={notes} /></ul></div></section>;
+}
+function SamplesView({ samples, selected, setSelected, openSample, onCreate, onDelete, canManageApproved }: { samples: Sample[]; selected: Sample | null; setSelected: (s: Sample | null) => void; openSample: (s: Sample) => void; onCreate: () => void; onDelete: (id: string) => void; canManageApproved: boolean }) {
+  if (selected) return <SampleDetail sample={selected} onBack={() => setSelected(null)} onDelete={() => onDelete(selected.id)} canDelete={canManageApproved || selected.status === "Bản nháp"} />;
+  return <><PageIntro eyebrow="SAMPLE INDEX / REFERENCE LIBRARY" title={<>Mẫu có <em>context.</em></>} description="Từ đặc tính vật lý đến lý thuyết nền — mọi reference đều nằm cạnh nơi đội ngũ sử dụng nó." action={<Button className="primary-cta" onClick={onCreate}><Plus size={16} /> Thêm mẫu</Button>} /><div className="sample-filter"><span><FlaskConical size={15} /> {samples.length} entries</span><div><button className="filter-chip active">Tất cả mẫu</button><button className="filter-chip">Cell lysate</button><button className="filter-chip">Nucleic acid</button></div></div><div className="sample-grid">{samples.map(sample => <button className="sample-card" key={sample.id} onClick={() => openSample(sample)}><div className="sample-card-icon"><Beaker size={22} /></div><div className="sample-card-code">{sample.code}</div><h2>{sample.name}</h2><p>{sample.description}</p><div className="property-preview">{sample.properties.slice(0, 2).map(prop => <span key={prop.label}><small>{prop.label}</small><strong>{prop.value}</strong></span>)}</div><div className="sample-card-footer"><span>{sample.group}</span><span>{sample.updatedAt} <ChevronRight size={14} /></span></div></button>)}</div>{samples.length === 0 && <div className="empty-state"><AlertTriangle size={24} /><h3>Chưa có mục tham chiếu</h3><p>Kho mẫu hiện chưa có dữ liệu để hiển thị.</p></div>}</>;
+}
+
+function SampleDetail({ sample, onBack, onDelete, canDelete }: { sample: Sample; onBack: () => void; onDelete: () => void; canDelete: boolean }) {
+  return <><button className="back-link" onClick={onBack}><ArrowLeft size={15} /> Tất cả mẫu</button><div className="detail-header sample-detail-header"><div><div className="sample-card-code">{sample.code}</div><h1>{sample.name}</h1><p>{sample.description}</p><div className="detail-meta"><span className="status-pill approved">{sample.status}</span><span>{sample.group}</span><span>Updated {sample.updatedAt}</span></div></div><div className="sample-card-icon large"><Beaker size={28} /></div>{canDelete && <button className="icon-button danger" onClick={onDelete} aria-label={`Xóa ${sample.name}`}><Trash2 size={16} /></button>}</div><div className="sample-detail-grid"><section className="content-panel"><div className="panel-index">01 / PROPERTIES</div><h2>Đặc tính & dữ liệu tham chiếu</h2><div className="properties-grid">{sample.properties.map(prop => <div key={prop.label}><small>{prop.label}</small><strong>{prop.value}</strong></div>)}</div></section><section className="content-panel theory-panel"><div className="panel-index">02 / THEORY NOTE</div><h2>Lý thuyết về mẫu</h2><p>{sample.theory}</p><div className="theory-source"><BookOpen size={15} /><span>Internal lab note · Reviewed by Lab owner</span></div></section></div></>;
+}
+
+function UnitConverter() {
+  const groups = {
+    volume: { label: "Thể tích", units: ["L", "mL", "µL"] },
+    mass: { label: "Khối lượng", units: ["g", "mg", "µg", "ng"] },
+    amount: { label: "Lượng chất", units: ["mol", "mmol", "µmol"] },
+    pressure: { label: "Áp suất", units: ["Pa", "kPa", "atm", "mmHg"] },
+    temperature: { label: "Nhiệt độ", units: ["°C", "°F"] },
+  } as const;
+  const [group, setGroup] = useState<keyof typeof groups>("volume");
+  const [value, setValue] = useState("1");
+  const [from, setFrom] = useState("L");
+  const [to, setTo] = useState("mL");
+  const active = groups[group];
+  const convert = () => {
+    const number = parseLocaleNumber(value);
+    if (!Number.isFinite(number)) return null;
+    if (group === "temperature") return from === to ? number : from === "°C" ? number * 9 / 5 + 32 : (number - 32) * 5 / 9;
+    const factors: Record<string, number> = group === "volume" ? { L: 1, mL: 1e-3, "µL": 1e-6 } : group === "mass" ? { g: 1, mg: 1e-3, "µg": 1e-6, ng: 1e-9 } : group === "amount" ? { mol: 1, mmol: 1e-3, "µmol": 1e-6 } : { Pa: 1, kPa: 1e3, atm: 101325, mmHg: 133.322 };
+    return number * (factors[from] ?? 1) / (factors[to] ?? 1);
+  };
+  const result = convert();
+  return <section className="content-panel unit-converter-panel"><div className="panel-heading"><div><span className="panel-index">UNIT CONVERTER</span><h2>Chuyển đổi đơn vị</h2></div><Calculator size={20} /></div><div className="unit-category-tabs">{(Object.keys(groups) as Array<keyof typeof groups>).map(key => <button key={key} className={group === key ? "active" : ""} onClick={() => { setGroup(key); setFrom(groups[key].units[0]); setTo(groups[key].units[1] ?? groups[key].units[0]); }}>{groups[key].label}</button>)}</div><div className="unit-converter-grid"><label className="field-label">Giá trị<Input value={value} onChange={event => setValue(event.target.value)} inputMode="decimal" placeholder="Nhập số" /></label><div className="unit-choice-field"><span>Từ</span><div className="choice-options" role="group" aria-label="Đơn vị đầu vào">{active.units.map(unit => <button type="button" key={unit} className={from === unit ? "active" : ""} aria-pressed={from === unit} onClick={() => setFrom(unit)}>{unit}</button>)}</div></div><div className="unit-choice-field"><span>Sang</span><div className="choice-options" role="group" aria-label="Đơn vị đích">{active.units.map(unit => <button type="button" key={unit} className={to === unit ? "active" : ""} aria-pressed={to === unit} onClick={() => setTo(unit)}>{unit}</button>)}</div></div></div><div className="unit-converter-result"><small>KẾT QUẢ</small><strong>{result === null ? "—" : formatNumber(result)} {to}</strong></div></section>;
+}
+function CalculatorView({ embedded = false, tools, onDesign, selectedCalc, setSelectedCalc, c1, v1, c2, v2, setC1, setV1, setC2, setV2, dilutionTarget, setDilutionTarget, dilutionConcentrationMode, setDilutionConcentrationMode, dilutionVolumeUnits, setDilutionVolumeUnits, dilutionConcentrationUnits, setDilutionConcentrationUnits, result, runCalculation, recent, clearHistory, deleteCalculation, canCalculate, volumeUnit, setVolumeUnit, cellUnit, setCellUnit, dilutionMode, setDilutionMode, dilutionFactorValue, setDilutionFactorValue, dilutionInitialVolume, setDilutionInitialVolume, dilutionAddedVolume, setDilutionAddedVolume, manualSolutionVolume, setManualSolutionVolume, manualCountedSquares, setManualCountedSquares }: { embedded?: boolean; tools: CalculatorDefinition[]; onDesign: () => void; selectedCalc: string; setSelectedCalc: (id: string) => void; c1: string; v1: string; c2: string; v2: string; setC1: (v: string) => void; setV1: (v: string) => void; setC2: (v: string) => void; setV2: (v: string) => void; dilutionTarget: DilutionTarget; setDilutionTarget: (target: DilutionTarget) => void; dilutionConcentrationMode: "stock" | "percent"; setDilutionConcentrationMode: (mode: "stock" | "percent") => void; dilutionVolumeUnits: Record<"v1" | "v2", VolumeUnit>; setDilutionVolumeUnits: (units: Record<"v1" | "v2", VolumeUnit>) => void; dilutionConcentrationUnits: Record<"c1" | "c2", ConcentrationUnit>; setDilutionConcentrationUnits: (units: Record<"c1" | "c2", ConcentrationUnit>) => void; result: number | null; runCalculation: () => void; recent: string[]; clearHistory: () => void; deleteCalculation: (index: number) => void; canCalculate: boolean; volumeUnit: VolumeUnit; setVolumeUnit: (unit: VolumeUnit) => void; cellUnit: CellUnit; setCellUnit: (unit: CellUnit) => void; dilutionMode: DilutionMode; setDilutionMode: (mode: DilutionMode) => void; dilutionFactorValue: string; setDilutionFactorValue: (value: string) => void; dilutionInitialVolume: string; setDilutionInitialVolume: (value: string) => void; dilutionAddedVolume: string; setDilutionAddedVolume: (value: string) => void; manualSolutionVolume: string; setManualSolutionVolume: (value: string) => void; manualCountedSquares: string; setManualCountedSquares: (value: string) => void }) {
+  const activeCalc = tools.find(calc => calc.id === selectedCalc) || tools[0];
+  const visibleTools = tools.filter(tool => !tool.protocolOnly);
+  const isDilution = selectedCalc === "dilution";
+  const isManualCount = selectedCalc === "manual-cell-count";
+  const isCellsNeeded = selectedCalc === "cells-needed";
+  const isVolumeToTake = selectedCalc === "volume-to-take";
+  const isVolumeToAdd = selectedCalc === "volume-to-add";
+  const isNegativeVolumeToAdd = isVolumeToAdd && typeof result === "number" && result < 0;
+  const [dilutionUnitsCollapsed, setDilutionUnitsCollapsed] = useState(false);
+  const renderField = (label: string, help: string, value: string, setter: (value: string) => void, unit: string) => <label>{label}<span>{help}</span><div><Input value={value} onChange={event => setter(event.target.value)} inputMode="decimal" /><b>{unit}</b></div></label>;
+  const renderDilutionField = (label: string, help: string, value: string, setter: (value: string) => void, unit: string, options: readonly string[], setUnit: (value: string) => void, disabled: boolean) => <label>{label}<span>{help}</span><div className="dilution-field-unit"><Input value={value} onChange={event => setter(event.target.value)} inputMode="decimal" disabled={disabled} placeholder={disabled ? "Tự tính" : undefined} /></div>{!dilutionUnitsCollapsed && <div className="choice-options choice-options-compact" role="group" aria-label={`Đơn vị ${label}`}>{options.map(option => <button type="button" key={option} className={unit === option ? "active" : ""} aria-pressed={unit === option} onClick={() => setUnit(option)}>{option}</button>)}</div>}</label>;
+  const unitSelect = (label: string, value: string, options: readonly string[], setter: (value: string) => void) => <div className="choice-field"><span>{label}</span><div className="choice-options" role="group" aria-label={label}>{options.map(option => <button type="button" key={option} className={value === option ? "active" : ""} aria-pressed={value === option} onClick={() => setter(option)}>{option}</button>)}</div></div>;
+  const activeConcentrationUnits = dilutionConcentrationMode === "percent" ? { c1: "%" as const, c2: "%" as const } : dilutionConcentrationUnits;
+  const concentrationOptions = dilutionConcentrationMode === "percent" ? ["%"] : CONCENTRATION_UNITS.filter(unit => unit !== "%");
+  const dilutionResultUnit = dilutionTarget.startsWith("C") ? activeConcentrationUnits[dilutionTarget.toLowerCase() as "c1" | "c2"] : dilutionVolumeUnits[dilutionTarget.toLowerCase() as "v1" | "v2"];
+  const dilutionEquation = dilutionTarget === "C1" ? "(C₂ × V₂) / V₁" : dilutionTarget === "V1" ? "(C₂ × V₂) / C₁" : dilutionTarget === "C2" ? "(C₁ × V₁) / V₂" : "(C₁ × V₁) / C₂";
+  if (!tools.length) return <><PageIntro eyebrow="CALCULATION DESK" title={<>Công cụ <em>tính toán.</em></>} description="Chưa có công thức tính nào." action={<Button onClick={onDesign}>Tạo công thức</Button>} /></>;
+  const calculatorPicker = embedded ? null : <nav className="calculator-picker" aria-label="Chọn công cụ tính">{visibleTools.map(tool => <button key={tool.id} className={tool.id === activeCalc.id ? "active" : ""} onClick={() => setSelectedCalc(tool.id)}>{tool.name}</button>)}</nav>;
+  const calculatorNav = <aside className="calculator-nav content-panel"><div className="panel-index">AVAILABLE TOOLS</div>{(["Chemicals", "Cells", "PCR", "Custom", "Hypoxia", "HighPressure"] as const).map(group => { const grouped = group === "Custom" ? visibleTools.filter(tool => !["Chemicals", "Cells", "PCR", "Hypoxia", "HighPressure"].includes(tool.category)) : visibleTools.filter(tool => tool.category === group); return grouped.length ? <div key={group} className="calculator-group"><small className="calculator-group-label">{TOOL_GROUP_LABEL[group]}</small>{grouped.map(calc => <button key={calc.id} className={`calc-nav-item ${selectedCalc === calc.id ? "active" : ""}`} onClick={() => setSelectedCalc(calc.id)}><span className={`calc-dot ${calc.color}`} /><span><strong>{calc.name}</strong><small>{TOOL_GROUP_LABEL[calc.category as ToolGroup] || calc.category}</small></span><ChevronRight size={14} /></button>)}</div> : null; })}<div className="calculator-tip"><Sparkles size={14} /><span>Công thức được cấu hình bởi owner và version hóa cùng protocol.</span></div></aside>;
+  const renderSpecialTool = (tool: ReactNode, formula: string) => <div className={`calculator-layout calculator-special-layout${embedded ? " embedded" : ""}`}>{!embedded && calculatorNav}<section className="calc-workbench"><div className={`formula-card${activeCalc.id === "unit-converter" ? " compact-formula-card" : ""}`}><span className="panel-index">FORMULA / {activeCalc.id.toUpperCase()}</span><div className="formula-title"><div><h2>{activeCalc.name}</h2><p>{activeCalc.description}</p></div><div className="formula">{formula}</div></div></div><div className="calc-form-card content-panel special-tool-form">{tool}</div></section></div>;
+  if (activeCalc.id === "unit-converter") return <><PageIntro eyebrow="UTILITY / UNIT CONVERTER" title={<>Đổi đơn vị <em>nhanh và rõ.</em></>} description="Chọn nhóm đại lượng, đơn vị đầu vào và đơn vị đích để nhận kết quả ngay." />{renderSpecialTool(<UnitConverter />, "Đổi giữa các đơn vị cùng nhóm")}</>;
+  if (activeCalc.id === "hypoxia-headspace") return <><PageIntro eyebrow="CONDITION TOOL / HYPOXIA" title={<>Ước tính O₂ <em>trong hệ kín.</em></>} description="Kiểm tra ngân sách O₂ pha khí, không dự đoán pO₂ tại tế bào." />{calculatorPicker}<Suspense fallback={lazyFallback}><HypoxiaCalculator /></Suspense></>;
+  if (activeCalc.id === "nycodenz") return <><PageIntro eyebrow="PROTOCOL-ONLY TOOL / NYCODENZ" title={<>Pha <em>Nycodenz.</em></>} description="Công cụ này chỉ hiển thị khi được liên kết vào một bước quy trình." />{calculatorPicker}<Suspense fallback={lazyFallback}><NycodenzCalculator /></Suspense></>;
+  if (activeCalc.id === "bca-working-solution") return <><PageIntro eyebrow="PROTOCOL-ONLY TOOL / BCA" title={<>Pha <em>Working Solution BCA.</em></>} description="Công cụ này chỉ hiển thị khi được liên kết vào một bước quy trình hoặc trong kho quản lý Admin." />{calculatorPicker}<Suspense fallback={lazyFallback}><BcaWorkingSolutionCalculator /></Suspense></>;
+  if (activeCalc.id === "seeding") return <><PageIntro eyebrow="CELL GROUP / SEEDING" title={<>Chuẩn bị <em>mẻ seeding.</em></>} description="Tính nhanh lượng môi trường và suspension cần lấy cho từng loại giếng hoặc flask." />{renderSpecialTool(<Suspense fallback={lazyFallback}><SeedingCalculator /></Suspense>, "Tổng môi trường − suspension chứa tế bào")}</>;
+  if (!["dilution", "viability", "molarity", "manual-cell-count", "cells-needed", "volume-to-take", "volume-to-add", "unit-converter", "hypoxia-headspace", "nycodenz", "seeding"].includes(activeCalc.id)) return <><PageIntro eyebrow="CUSTOM CALCULATOR" title={<>Công cụ tính <em>theo công thức.</em></>} description="Nhập biến rồi tính ngay bằng công thức đã lưu." />{calculatorPicker}<Suspense fallback={lazyFallback}><CustomCalculator key={activeCalc.id} name={activeCalc.name} formula={activeCalc.formula} description={activeCalc.description} config={activeCalc.config} /></Suspense></>;
+  return <><PageIntro eyebrow={`CALCULATION DESK / ${visibleTools.length} TOOLS`} title={<>Lựa chọn đúng <em>công cụ phục vụ mục đích.</em></>} description="Các công thức nhỏ, những điểm kiểm tra quan trọng — được gói trong một workflow nhất quán." action={<Button className="primary-cta" onClick={onDesign}><FilePenLine size={16} /> Thiết kế page công cụ</Button>} /><div className="calculator-layout"><aside className="calculator-nav content-panel"><div className="panel-index">AVAILABLE TOOLS</div>{(["Chemicals", "Cells", "PCR", "Custom", "Hypoxia", "HighPressure"] as const).map(group => { const grouped = group === "Custom" ? visibleTools.filter(tool => !["Chemicals", "Cells", "PCR", "Hypoxia", "HighPressure"].includes(tool.category)) : visibleTools.filter(tool => tool.category === group); return grouped.length ? <div key={group} className="calculator-group"><small className="calculator-group-label">{TOOL_GROUP_LABEL[group]}</small>{grouped.map(calc => <button key={calc.id} className={`calc-nav-item ${selectedCalc === calc.id ? "active" : ""}`} onClick={() => setSelectedCalc(calc.id)}><span className={`calc-dot ${calc.color}`} /><span><strong>{calc.name}</strong><small>{TOOL_GROUP_LABEL[calc.category as ToolGroup] || calc.category}</small></span><ChevronRight size={14} /></button>)}</div> : null; })}<div className="calculator-tip"><Sparkles size={14} /><span>Công thức được cấu hình bởi owner và version hóa cùng protocol.</span></div></aside><section className="calc-workbench"><div className="formula-card"><span className="panel-index">FORMULA / {activeCalc.id.toUpperCase()}</span><div className="formula-title"><div><h2>{activeCalc.name}</h2><p>{activeCalc.description}</p></div><div className="formula">{activeCalc.id === "manual-cell-count" ? "(TB trung bình / ô) × hệ số pha loãng × 10⁴ × thể tích dung dịch (mL)" : activeCalc.formula}</div></div></div><div className="calc-form-card content-panel">{isManualCount && <div className="result-toggle"><span>Cách tính hệ số pha loãng</span><button className={dilutionMode === "factor" ? "active" : ""} onClick={() => setDilutionMode("factor")}>Dùng hệ số</button><button className={dilutionMode === "volumes" ? "active" : ""} onClick={() => setDilutionMode("volumes")}>Dùng thể tích ban đầu + thể tích pha thêm</button></div>}{(selectedCalc === "molarity" || isCellsNeeded || isVolumeToTake || isVolumeToAdd || (isManualCount && dilutionMode === "volumes")) && unitSelect("Đơn vị thể tích", volumeUnit, VOLUME_UNITS, value => setVolumeUnit(value as VolumeUnit))}{(isCellsNeeded || isVolumeToTake) && unitSelect(isVolumeToTake ? "Đơn vị số tế bào hiện có" : "Đơn vị mục tiêu", cellUnit, ["cell", "cell/mL", "cell/giếng", "cell/flask"], value => setCellUnit(value as CellUnit))}<div className="calc-input-grid">{isDilution ? <div className="dilution-tool"><div className="result-toggle dilution-mode-toggle"><span>Cách tính pha loãng nồng độ</span><button className={dilutionConcentrationMode === "stock" ? "active" : ""} onClick={() => setDilutionConcentrationMode("stock")}>Đơn vị stock</button><button className={dilutionConcentrationMode === "percent" ? "active" : ""} onClick={() => setDilutionConcentrationMode("percent")}>% stock</button></div><div className="dilution-unit-toolbar"><strong>Đơn vị từng đại lượng</strong><button type="button" className="text-button" onClick={() => setDilutionUnitsCollapsed(current => !current)}>{dilutionUnitsCollapsed ? "Mở rộng đơn vị" : "Rút gọn đơn vị"}</button></div><div className="dilution-target-tabs" role="tablist" aria-label="Chọn đại lượng cần tính">{(["C1", "V1", "C2", "V2"] as DilutionTarget[]).map(target => <button type="button" key={target} className={dilutionTarget === target ? "active" : ""} onClick={() => setDilutionTarget(target)}>Tính {target.replace("1", "₁").replace("2", "₂")}</button>)}</div><p className="dilution-note">Nhập ba đại lượng đã biết; đại lượng đang chọn sẽ được tự tính. Đổi đơn vị ngay trên từng ô.</p><div className="calc-input-grid">{renderDilutionField("C₁", "Nồng độ stock", c1, setC1, activeConcentrationUnits.c1, concentrationOptions, value => { if (dilutionConcentrationMode === "stock") setDilutionConcentrationUnits({ ...dilutionConcentrationUnits, c1: value as ConcentrationUnit }); }, dilutionTarget === "C1")}{renderDilutionField("V₁", "Thể tích stock", v1, setV1, dilutionVolumeUnits.v1, VOLUME_UNITS, value => setDilutionVolumeUnits({ ...dilutionVolumeUnits, v1: value as VolumeUnit }), dilutionTarget === "V1")}{renderDilutionField("C₂", "Nồng độ mong muốn", c2, setC2, activeConcentrationUnits.c2, concentrationOptions, value => { if (dilutionConcentrationMode === "stock") setDilutionConcentrationUnits({ ...dilutionConcentrationUnits, c2: value as ConcentrationUnit }); }, dilutionTarget === "C2")}{renderDilutionField("V₂", "Thể tích cuối", v2, setV2, dilutionVolumeUnits.v2, VOLUME_UNITS, value => setDilutionVolumeUnits({ ...dilutionVolumeUnits, v2: value as VolumeUnit }), dilutionTarget === "V2")}</div></div> : selectedCalc === "viability" ? <>{renderField("Sống", "Số tế bào sống", c1, setC1, "cells")}{renderField("Tổng", "Tổng số tế bào", v1, setV1, "cells")}</> : isManualCount ? <>{renderField("Tổng số tế bào đếm được", "Tổng trong các ô đã đếm", c1, setC1, "cells")}{renderField("Số ô đã đếm", "Mặc định 4 ô lớn / ô vuông", manualCountedSquares, setManualCountedSquares, "ô")}{renderField("Lượng dung dịch chứa pellet", "Để trống sẽ mặc định 1 mL", manualSolutionVolume, setManualSolutionVolume, "mL")}{dilutionMode === "factor" ? renderField("Hệ số pha loãng", "Ví dụ 2 nếu pha 1:1", dilutionFactorValue, setDilutionFactorValue, "×") : <>{renderField("Thể tích ban đầu", "Thể tích mẫu trước pha", dilutionInitialVolume, setDilutionInitialVolume, volumeUnit)}{renderField("Thể tích pha thêm", "Thể tích dung dịch pha thêm", dilutionAddedVolume, setDilutionAddedVolume, volumeUnit)}</>}</> : isVolumeToAdd ? <>{renderField("Dung tích có sẵn", "Thể tích hiện đang có", c1, setC1, volumeUnit)}{renderField("Dung tích đã thêm vào", "Thể tích đã bổ sung trước đó", v1, setV1, volumeUnit)}{renderField("Tổng dung tích mục tiêu", "Thể tích cần đạt sau cùng", c2, setC2, volumeUnit)}</> : isCellsNeeded ? <>{renderField("Mật độ mục tiêu", "Mật độ tế bào cần seed", c1, setC1, cellUnit)}{cellUnit !== "cell" && renderField("Số đơn vị", "Số giếng hoặc flask", v1, setV1, "đơn vị")}{cellUnit === "cell/mL" && renderField("Thể tích / đơn vị", "Thể tích môi trường mỗi đơn vị", c2, setC2, volumeUnit)}</> : isVolumeToTake ? <>{renderField("Số tế bào mong muốn", "Tổng số tế bào cần lấy", c1, setC1, "cell")}{renderField(cellUnit === "cell" ? "Tổng số tế bào hiện có" : "Số tế bào hiện có theo đơn vị", cellUnit === "cell" ? "Tổng toàn bộ tế bào, không phụ thuộc số giếng/flask" : "Nhập mật độ hoặc số tế bào mỗi giếng/flask", v1, setV1, cellUnit)}{renderField("Tổng thể tích hiện có", "V của suspension", c2, setC2, volumeUnit)}{(cellUnit === "cell/giếng" || cellUnit === "cell/flask") && renderField("Số giếng / flask hiện có", "Để quy đổi số tế bào mỗi đơn vị về tổng số", v2, setV2, cellUnit === "cell/giếng" ? "giếng" : "flask")}</> : <>{renderField("C", "Nồng độ mol", c1, setC1, "M")}{renderField("V", "Thể tích dung dịch", v1, setV1, volumeUnit)}{renderField("MW", "Khối lượng phân tử", c2, setC2, "g/mol")}</>}</div><div className="calc-result"><div><span className="panel-index">RESULT / {isDilution ? dilutionTarget : activeCalc.name}</span><>{isNegativeVolumeToAdd ? <><strong className="negative-volume-message">Bạn cần phải rút bớt dung tích đấy</strong><small className="negative-volume-note">Hãy kiểm tra lại số liệu và đơn vị</small></> : <strong>{result === null ? "—" : formatNumber(result)} <small>{isDilution ? dilutionResultUnit : selectedCalc === "viability" ? "%" : selectedCalc === "molarity" ? "g" : selectedCalc === "volume-to-take" || selectedCalc === "volume-to-add" ? volumeUnit : selectedCalc === "manual-cell-count" ? "cell" : selectedCalc === "cells-needed" ? "cells" : volumeUnit}</small></strong>}</></div><div className="result-equation">{isDilution ? dilutionEquation : activeCalc.id === "manual-cell-count" ? "Mật độ × thể tích dung dịch (mL)" : activeCalc.formula}</div></div><div className="calc-actions"><Button disabled={!canCalculate} onClick={runCalculation} className="primary-cta"><Gauge size={16} /> {canCalculate ? "Tính & lưu kết quả" : "Viewer chỉ được xem"}</Button><span><ShieldCheck size={14} /> Kiểm tra đầu vào tự động</span></div></div><div className="history-card content-panel"><div className="panel-heading"><div><span className="panel-index">SESSION HISTORY</span><h2>Lần tính gần đây</h2></div><button className="text-button" onClick={clearHistory}>Xóa lịch sử</button></div>{recent.length ? recent.map((item, index) => <div className="history-row" key={`${item}-${index}`}><span className="history-number">0{index + 1}</span><span>{item}</span><button type="button" className="icon-button danger" onClick={() => deleteCalculation(index)} aria-label={`Xóa phép tính ${index + 1}`}><Trash2 size={14} /></button></div>) : <div className="empty-state"><p>Chưa có phép tính trong phiên này.</p></div>}</div></section></div></>;
+}
+
+function CollapsibleInventoryGroup({ label, count, children }: { label: string; count: number; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <div className="inventory-group"><button type="button" className="inventory-group-toggle" onClick={() => setOpen(current => !current)} aria-expanded={open}><span className="inventory-label">{label} <b>{count}</b></span><span className="inventory-show">{open ? "Hide" : "Show"}<ChevronDown size={14} className={open ? "is-open" : ""} /></span></button>{open && <div className="inventory-group-content">{children}</div>}</div>;
+}
+function AdminView({ isAdmin, protocols, samples, draftOwner, setDraftOwner, draftCategory, setDraftCategory, calculators, onEditProtocol, onEditCalculator, onDeleteCalculator, onCreateProtocol, draftType, setDraftType, draftTitle, setDraftTitle, draftBody, setDraftBody, draftFormula, setDraftFormula, draftInputUnits, setDraftInputUnits, draftItems, setDraftItems, draftOutputUnit, setDraftOutputUnit, onSave, onDeleteProtocol, onDeleteSample, onEditSample }: { isAdmin: boolean; protocols: Protocol[]; samples: Sample[]; draftOwner: string; setDraftOwner: (value: string) => void; draftCategory: ContentCategory; setDraftCategory: (value: ContentCategory) => void; calculators: CalculatorDefinition[]; onEditProtocol: (protocol: Protocol) => void; onEditCalculator: (id: string) => void; onDeleteCalculator: (id: string) => void; onCreateProtocol: () => void; draftType: "Quy trình" | "Mẫu" | "Lý thuyết" | "Phương trình"; setDraftType: (t: "Quy trình" | "Mẫu" | "Lý thuyết" | "Phương trình") => void; draftTitle: string; setDraftTitle: (s: string) => void; draftBody: string; setDraftBody: (s: string) => void; draftFormula: string; setDraftFormula: (s: string) => void; draftInputUnits: Record<string, string>; setDraftInputUnits: (value: Record<string, string>) => void; draftItems: FormulaItem[]; setDraftItems: (value: FormulaItem[]) => void; draftOutputUnit: string; setDraftOutputUnit: (value: string) => void; onSave: () => void; onDeleteProtocol: (id: string) => void; onDeleteSample: (id: string) => void; onEditSample: (sample: Sample) => void }) {
+  const formulaVariables = (() => { try { return draftFormula.trim() ? getFormulaVariables(draftFormula) : []; } catch { return []; } })();
+  const approvedProtocols = protocols.filter(protocol => protocol.status === "Đã duyệt");
+  const chemicalResourcesQuery = trpc.chemicals.list.useQuery(undefined, { retry: false });
+  const chemicalResources = ((chemicalResourcesQuery.data?.length ? chemicalResourcesQuery.data : seedChemicalRecipes) as ChemicalRecipe[]).filter(recipe => recipe.group !== "Dung dịch nhuộm ICC");
+  return <><PageIntro eyebrow="OWNER CONSOLE / CONTENT CONTROL" title={<>Quản lý <em>Tài nguyên Phòng thí nghiệm.</em></>} description="Phân bổ nội dung thành các page, từng bước quy trình và từng phương trình tool — không cần viết code." action={<div className="intro-actions"><Button className="primary-cta" onClick={onCreateProtocol}><Plus size={16} /> Thiết kế quy trình theo bước</Button><div className="owner-chip"><ShieldCheck size={15} /> Public editor</div></div>} /><div className="admin-layout"><section className="content-panel editor-panel"><div className="panel-heading"><div><span className="panel-index">PAGE TYPES / CONTENT BLOCKS</span><h2>Thêm nội dung vào kho</h2></div><span className="draft-badge">Server saved</span></div><div className="editor-tabs">{(["Quy trình", "Mẫu", "Lý thuyết", "Phương trình"] as const).map(type => <button key={type} className={draftType === type ? "active" : ""} onClick={() => setDraftType(type)}>{type}</button>)}</div>{(draftType === "Quy trình" || draftType === "Phương trình") && <label className="field-label">Nhóm nội dung<select value={draftCategory} onChange={event => setDraftCategory(event.target.value as "Custom" | SpecialCategory)}><option value="Custom">Thư viện chung</option>{draftType === "Quy trình" && <><option value="ProtocolCells">Quy trình cho Tế bào</option><option value="ProtocolPCR">Quy trình cho PCR</option><option value="ProtocolEvaluation">Quy trình đánh giá</option><option value="ProtocolStaining">Quy trình nhuộm</option></>}{draftType === "Quy trình" && <><option value="Hypoxia">Nuôi cấy Hypoxia</option><option value="HighPressure">Nuôi cấy áp suất cao</option></>}{draftType === "Phương trình" && <><option value="Chemicals">Hoá chất</option><option value="Cells">Tế bào</option><option value="PCR">PCR</option></>}</select></label>}<label className="field-label">Tiêu đề / tên reference<Input value={draftTitle} onChange={e => setDraftTitle(e.target.value)} placeholder={draftType === "Quy trình" ? "VD: Western blot — membrane transfer" : "VD: Recombinant protein R-102"} /></label>{draftType === "Quy trình" && <label className="field-label">Người viết quy trình<Input value={draftOwner} onChange={event => setDraftOwner(event.target.value)} placeholder="VD: Nguyễn Văn A" /></label>}<label className="field-label">Mô tả hoặc ghi chú nội bộ<Textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder="Viết thông tin để team có thể dùng ngay…" rows={6} /></label>{draftType === "Phương trình" && <label className="field-label">Phương trình<Input value={draftFormula} onChange={e => setDraftFormula(e.target.value)} placeholder="VD: N_mong_muon / N_tong * V_tong" /><small>Biến dùng chữ không dấu/ASCII; hỗ trợ +, -, *, /, ^, sqrt(...) và dấu ngoặc. Dùng danh sách mục bên dưới để chọn biến; nhãn đơn vị không tự quy đổi.</small></label>}{draftType === "Phương trình" && <div className="formula-item-editor"><div className="formula-item-heading"><strong>Các mục dùng trong phép tính</strong><small>Thêm từng đại lượng, đặt mã biến để chọn đưa vào phương trình.</small></div>{draftItems.map((item, index) => <div className="formula-item-row" key={`${item.key}-${index}`}><Input value={item.key} onChange={event => { const next = [...draftItems]; next[index] = { ...item, key: event.target.value }; setDraftItems(next); }} placeholder="Mã biến: V_mau" /><Input value={item.label} onChange={event => { const next = [...draftItems]; next[index] = { ...item, label: event.target.value }; setDraftItems(next); }} placeholder="Tên hiển thị: Thể tích mẫu" /><Input value={item.unit} onChange={event => { const next = [...draftItems]; next[index] = { ...item, unit: event.target.value }; setDraftItems(next); }} placeholder="Đơn vị: mL" /><button type="button" className="icon-button" onClick={() => setDraftItems(draftItems.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Xóa mục ${item.label || item.key}`}><Trash2 size={14} /></button></div>)}<div className="formula-item-actions"><Button type="button" onClick={() => setDraftItems([...draftItems, { key: `x_${draftItems.length + 1}`, label: "", unit: "" }])}><Plus size={14} /> Thêm mục</Button>{draftItems.length > 0 && <select value="" onChange={event => { const key = event.target.value; if (!key) return; setDraftFormula(draftFormula ? `${draftFormula} * ${key}` : key); }}><option value="">Chọn mục để thêm vào phương trình</option>{draftItems.map(item => <option key={item.key} value={item.key}>{item.label || item.key} · {item.key}</option>)}</select>}</div><label className="field-label">Đơn vị kết quả<Input value={draftOutputUnit} onChange={event => setDraftOutputUnit(event.target.value)} placeholder="VD: giờ" /></label></div>}<div className="editor-footer"><span><FilePenLine size={14} /> Thay đổi được lưu trực tiếp vào kho dữ liệu</span><Button onClick={onSave} className="primary-cta"><Check size={15} /> Lưu {draftType === "Phương trình" ? "tool" : "bản nháp"}</Button></div></section><aside className="content-panel inventory-panel"><div className="panel-heading"><div><span className="panel-index">CONTENT INVENTORY</span><h2>Danh sách Tài nguyên</h2></div><MoreHorizontal size={18} /></div><CollapsibleInventoryGroup label="Quy trình" count={approvedProtocols.length}><>{approvedProtocols.map(protocol => <div className="inventory-row" key={protocol.id}><span className="inventory-dot teal" /><span>{protocol.title}</span>{isAdmin && <button onClick={() => onEditProtocol(protocol)} aria-label={`Sửa ${protocol.title}`}><FilePenLine size={13} /></button>}{(isAdmin || protocol.status === "Bản nháp") && <button onClick={() => onDeleteProtocol(protocol.id)} aria-label={`Xóa ${protocol.title}`}><Trash2 size={13} /></button>}</div>)}</></CollapsibleInventoryGroup><CollapsibleInventoryGroup label="Mẫu & lý thuyết" count={samples.length}><>{samples.slice(0, 3).map(sample => <div className="inventory-row" key={sample.id}><span className="inventory-dot amber" /><span>{sample.name}</span>{(isAdmin || sample.status === "Bản nháp") && <button onClick={() => onEditSample(sample)} aria-label={`Sửa ${sample.name}`}><FilePenLine size={13} /></button>}{isAdmin && <button onClick={() => onDeleteSample(sample.id)} aria-label={`Xóa ${sample.name}`}><Trash2 size={13} /></button>}</div>)}</></CollapsibleInventoryGroup><CollapsibleInventoryGroup label="Công thức tính" count={calculators.length}><>{calculators.map(calculator => <div className="inventory-row" key={calculator.id}><span className="inventory-dot blue" /><span>{calculator.name}</span>{calculator.dbId && <button onClick={() => onEditCalculator(calculator.id)} aria-label={`Sửa ${calculator.name}`}><FilePenLine size={13} /></button>}{(isAdmin || calculator.status === "Bản nháp") && <button onClick={() => onDeleteCalculator(calculator.id)} aria-label={`Xóa ${calculator.name}`}><Trash2 size={13} /></button>}</div>)}</></CollapsibleInventoryGroup><CollapsibleInventoryGroup label="Pha hoá chất" count={chemicalResources.length}><>{chemicalResources.map(recipe => <div className="inventory-row" key={recipe.id}><span className="inventory-dot teal" /><span><strong>{recipe.name}</strong></span></div>)}</></CollapsibleInventoryGroup><div className="admin-note"><ShieldCheck size={15} /><span><strong>Public page editor</strong>Mọi người đều có thể mở và chỉnh sửa page.</span></div></aside></div></>;
+}
+
+function UserAccountView({ user, onSave, onLogout }: { user: { id: number; username?: string | null; name?: string | null; email?: string | null }; onSave: (email: string, currentPassword: string, newPassword: string) => void; onLogout: () => void }) {
+  const [email, setEmail] = useState(user.email ?? "");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const submit = () => {
+    if (!email.trim()) return toast.error("Vui lòng nhập email.");
+    if (!currentPassword) return toast.error("Nhập mật khẩu hiện tại để xác nhận thay đổi.");
+    if (newPassword && newPassword !== confirmPassword) return toast.error("Mật khẩu mới nhập lại không khớp.");
+    if (newPassword && newPassword.length < 8) return toast.error("Mật khẩu mới cần tối thiểu 8 ký tự.");
+    onSave(email.trim(), currentPassword, newPassword);
+    setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+  };
+  return <><PageIntro eyebrow="USER ACCOUNT / SETTINGS" title={<>Tài khoản <em>của bạn.</em></>} description="Cập nhật email hoặc đặt lại mật khẩu. Username là định danh cố định và chỉ được xem." action={<Button variant="outline" onClick={onLogout}>Đăng xuất</Button>} /><section className="content-panel account-panel"><div className="panel-heading"><div><span className="panel-index">ACCOUNT PROFILE</span><h2>{user.name || user.username || "User"}</h2></div><UserRound size={22} /></div><label className="field-label">Username<Input value={user.username ?? ""} readOnly disabled /><small>Username không thể thay đổi.</small></label><label className="field-label">Email<Input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="email" /></label><div className="account-divider"><span className="panel-index">PASSWORD CHANGE</span><p>Nhập mật khẩu hiện tại để đổi email hoặc mật khẩu.</p></div><label className="field-label">Mật khẩu hiện tại<Input value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} type="password" autoComplete="current-password" /></label><div className="account-password-grid"><label className="field-label">Mật khẩu mới<Input value={newPassword} onChange={event => setNewPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="Để trống nếu chỉ đổi email" /></label><label className="field-label">Nhập lại mật khẩu mới<Input value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" /></label></div><div className="editor-footer"><span>Email mới cần chưa được tài khoản khác sử dụng.</span><Button className="primary-cta" onClick={submit}>Lưu thay đổi</Button></div></section></>;
+}
+
+
+function UnifiedAuthView({ onUserSuccess, onAdminSuccess, initialRegistering = false }: { onUserSuccess: () => void; onAdminSuccess: () => void; initialRegistering?: boolean }) {
+  const [mode, setMode] = useState<"user" | "admin">("user");
+  const [registering, setRegistering] = useState(initialRegistering);
+  const [identifier, setIdentifier] = useState("");
+  const [username, setUsername] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const userLoginMutation = trpc.auth.userLogin.useMutation({ onSuccess: onUserSuccess, onError: error => toast.error(error.message) });
+  const adminLoginMutation = trpc.auth.adminLogin.useMutation({ onSuccess: onAdminSuccess, onError: error => toast.error(error.message) });
+  const registerMutation = trpc.auth.register.useMutation({ onSuccess: result => { toast.success(result.message); setRegistering(false); setIdentifier(username); setPassword(""); }, onError: error => toast.error(error.message) });
+  const changeMode = (next: "user" | "admin") => { setMode(next); setRegistering(false); setIdentifier(""); setPassword(""); };
+  const isPending = userLoginMutation.isPending || adminLoginMutation.isPending || registerMutation.isPending;
+  return <><PageIntro eyebrow="ACCOUNT ACCESS / SECURE SIGN-IN" title={<>Truy cập <em>workspace.</em></>} description="Đăng nhập User hoặc Admin trong cùng một khu vực. Đăng ký tài khoản mới dành cho User." /><section className="content-panel auth-card-inline"><div className="panel-heading"><div><span className="panel-index">ACCOUNT ACCESS</span><h2>{mode === "admin" ? "Đăng nhập Admin" : registering ? "Đăng ký tài khoản User" : "Đăng nhập User"}</h2></div>{mode === "admin" ? <ShieldCheck size={20} /> : <UserRound size={20} />}</div><div className="auth-mode-tabs" role="tablist" aria-label="Chọn loại tài khoản"><button type="button" className={mode === "user" ? "active" : ""} onClick={() => changeMode("user")} aria-selected={mode === "user"}>User</button><button type="button" className={mode === "admin" ? "active" : ""} onClick={() => changeMode("admin")} aria-selected={mode === "admin"}>Admin</button></div>{mode === "user" && registering ? <><label className="field-label">Username<Input value={username} onChange={event => setUsername(event.target.value)} placeholder="Ví dụ: lab.user" autoComplete="username" /></label><label className="field-label">Họ và Tên<Input value={name} onChange={event => setName(event.target.value)} placeholder="Nhập họ và tên đầy đủ" /></label><label className="field-label">Email<Input value={email} onChange={event => setEmail(event.target.value)} placeholder="name@example.com" type="email" autoComplete="email" /></label><label className="field-label">Mật khẩu<Input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="Tối thiểu 8 ký tự" /></label><p className="auth-registration-note">Cán bộ tạo acc User sẽ được duyệt Admin ngay sau khi xác nhận</p><div className="editor-footer"><Button variant="outline" onClick={() => setRegistering(false)}>Quay lại đăng nhập User</Button><Button className="primary-cta" disabled={isPending} onClick={() => registerMutation.mutate({ username, name, email, password })}>Tạo tài khoản User</Button></div></> : <><label className="field-label">Username hoặc email<Input value={identifier} onChange={event => setIdentifier(event.target.value)} placeholder={`Username hoặc email ${mode === "admin" ? "Admin" : "User"}`} autoComplete="username" /></label><label className="field-label">Mật khẩu<Input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="current-password" /></label><div className="editor-footer"><span>{mode === "admin" ? "Chỉ tài khoản Admin mới mở được khu vực quản trị." : "Tài khoản User mới cần được Admin duyệt trước khi đăng nhập."}</span><div>{mode === "user" && <Button variant="outline" onClick={() => setRegistering(true)}>Đăng ký User</Button>}<Button className="primary-cta" disabled={isPending} onClick={() => mode === "admin" ? adminLoginMutation.mutate({ identifier, password }) : userLoginMutation.mutate({ identifier, password })}>{mode === "admin" ? "Đăng nhập Admin" : "Đăng nhập User"}</Button></div></div></>}</section></>;
+}
+
+function accountDirectoryDetail(member: TeamMember) {
+  const username = member.username?.toLowerCase();
+  if (member.role === "supporter" || username === "admin" || username === "supporter" || member.name?.trim().toLowerCase() === "website supporter") return `${member.username || "admin"} · Hỗ trợ 24/7 · ${member.loginMethod || "email"}`;
+  if (username === "wstratos") return `${member.username || "Wstratos"} · ${member.loginMethod || "email"}`;
+  return `${member.username || "Chưa có username"} · ${member.email || "Thông tin email bị ẩn"} · ${member.loginMethod || "email"}`;
+}
+
+function AccountRow({ member, isProtectedAdmin, credentialActions, onRoleChange, onRevoke, onDelete, setRevealed }: { member: TeamMember; isProtectedAdmin: boolean; credentialActions: (member: TeamMember) => React.ReactNode; onRoleChange: (id: number, role: "admin" | "supporter" | "user") => void; onRevoke: (member: TeamMember) => void; onDelete: (member: TeamMember) => void; setRevealed: React.Dispatch<React.SetStateAction<{ id: number; password: string } | null>> }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isElevated = member.role === "admin" || member.role === "supporter";
+  const roleLabel = member.role === "supporter" ? "Supporter" : member.role === "admin" ? "Admin" : "User";
+  return <div className="team-row"><UserAvatar name={member.name} /><span className="team-identity"><strong>{member.name || member.username || "Chưa đặt tên"}</strong><small>{accountDirectoryDetail(member)}</small></span><span className={`role-pill ${member.role === "admin" || member.role === "supporter" ? "admin" : "user"}`}>{roleLabel}</span><select disabled={isProtectedAdmin} value={member.role} onChange={event => { setRevealed(null); onRoleChange(member.id, event.target.value as "admin" | "supporter" | "user"); }} aria-label={`Quyền của ${member.name || member.username}`}><option value="user">User</option><option value="admin">Admin</option>{member.role === "supporter" && <option value="supporter">Supporter</option>}</select><div className="account-action-menu"><button type="button" className="icon-button account-action-trigger" aria-label={`Thao tác với ${member.name || member.username}`} aria-expanded={menuOpen} onClick={() => setMenuOpen(current => !current)}><MoreVertical size={17} /></button>{menuOpen && <div className="account-action-popover"><div className="account-action-label">THAO TÁC ACCOUNT</div>{!isProtectedAdmin && !isElevated && <><button type="button" onClick={() => { setMenuOpen(false); onRevoke(member); }}>Thu hồi quyền</button><button type="button" onClick={() => { setMenuOpen(false); onDelete(member); }}>Xoá User</button></>}{credentialActions(member)}</div>}</div></div>;
+}
+
+function AdminAccountsView({ team, onApprovalChange, onRoleChange, onRevokeAccess, onDeleteUser, canManagePasswords, viewerId, onResetPassword }: { team: TeamMember[]; onApprovalChange: (id: number, status: TeamMember["approvalStatus"]) => void; onRoleChange: (id: number, role: "admin" | "supporter" | "user") => void; onRevokeAccess: (id: number) => void; onDeleteUser: (id: number) => void; canManagePasswords: boolean; viewerId: number; onResetPassword: (id: number, password: string) => void }) {
+  const pending = team.filter(member => member.approvalStatus === "pending");
+  const sortByFullName = (left: TeamMember, right: TeamMember) => (left.name || left.username || "").localeCompare(right.name || right.username || "", "vi", { sensitivity: "base" });
+  const adminAccounts = team.filter(member => member.role === "admin" || member.role === "supporter").sort(sortByFullName);
+  const approvedUserAccounts = team.filter(member => member.role === "user" && member.approvalStatus === "approved").sort(sortByFullName);
+  const [revealed, setRevealed] = useState<{ id: number; password: string } | null>(null);
+  const [viewTarget, setViewTarget] = useState<TeamMember | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [resetTarget, setResetTarget] = useState<TeamMember | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
+  const viewPasswordMutation = trpc.team.viewPassword.useMutation({
+    onSuccess: (result, input) => {
+      if (result.available && result.password !== null) setRevealed({ id: input.id, password: result.password });
+      else toast.info("Mật khẩu hiện tại không thể khôi phục. Có thể đặt lại mật khẩu mới.");
+      viewPasswordMutation.reset();
+    },
+    onError: error => { toast.error(error.message); viewPasswordMutation.reset(); },
+  });
+  useEffect(() => {
+    if (!revealed) return;
+    const timer = window.setTimeout(() => setRevealed(null), 30_000);
+    return () => window.clearTimeout(timer);
+  }, [revealed]);
+  const isProtectedAdmin = (member: TeamMember) => member.username?.toLowerCase() === "wstratos" || member.username?.toLowerCase() === "admin" || member.role === "supporter" || member.username?.toLowerCase() === "supporter" || member.name?.trim().toLowerCase() === "website supporter" || member.name?.trim().toLowerCase() === "bao nguyen gia";
+  const canView = (member: TeamMember) => member.loginMethod === "email" && (canManagePasswords || (member.role !== "admin" && member.role !== "supporter") || member.id === viewerId);
+  const revoke = (member: TeamMember) => {
+    if (window.confirm(`Thu hồi quyền truy cập của User ${member.username || member.name}? Tài khoản sẽ không thể đăng nhập cho đến khi được Admin duyệt lại.`)) onRevokeAccess(member.id);
+  };
+  const deleteUser = (member: TeamMember) => {
+    if (window.confirm(`Xoá User ${member.username || member.name}? Thao tác này xoá vĩnh viễn tài khoản.`) && window.confirm("Xác nhận lần cuối: xoá tài khoản User này?")) onDeleteUser(member.id);
+  };
+  const submitView = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!viewTarget || !currentPassword) return;
+    viewPasswordMutation.mutate({ id: viewTarget.id, currentPassword });
+    setCurrentPassword("");
+    setViewTarget(null);
+  };
+  const credentialActions = (member: TeamMember) => canView(member) ? <>
+    <Button variant="outline" disabled={viewPasswordMutation.isPending} onClick={() => { setRevealed(null); setViewTarget(member); setCurrentPassword(""); }}>Xem mật khẩu</Button>
+    <Button variant="outline" onClick={() => { setRevealed(null); setResetTarget(member); setNewPassword(""); setPasswordConfirmation(""); }}>Đặt lại mật khẩu</Button>
+    {revealed?.id === member.id && <span className="password-reveal"><code>{revealed.password}</code><button type="button" onClick={() => setRevealed(null)}>Ẩn</button></span>}
+  </> : null;
+  const submitReset = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!resetTarget || newPassword.length < 8 || newPassword !== passwordConfirmation) {
+      toast.error("Mật khẩu phải có ít nhất 8 ký tự và hai lần nhập phải khớp.");
+      return;
+    }
+    onResetPassword(resetTarget.id, newPassword);
+    setNewPassword("");
+    setPasswordConfirmation("");
+    setResetTarget(null);
+    setRevealed(null);
+  };
+  return <>
+    <PageIntro eyebrow="ADMIN / ACCOUNT MANAGEMENT" title={<>Quản lý <em>tài khoản workspace.</em></>} description="Duyệt tài khoản, điều chỉnh quyền và quản lý User." />
+    <section className="content-panel team-panel">
+      <div className="panel-heading"><div><span className="panel-index">PENDING ACCOUNTS / {pending.length}</span><h2>Tài khoản mới đăng ký</h2></div><span className="team-policy">{team.length} tài khoản</span></div>
+      {pending.length ? pending.map(member => <div className="team-row" key={member.id}>
+        <UserAvatar name={member.name} /><span className="team-identity"><strong>{member.username || member.name}</strong><small>{member.name} · {member.username?.toLowerCase() === "wstratos" ? "" : member.email || "Thông tin email bị ẩn"} · đăng ký {member.lastActive}</small></span>
+        <Button variant="outline" onClick={() => onApprovalChange(member.id, "rejected")}>Từ chối</Button>
+        <Button className="primary-cta" onClick={() => onApprovalChange(member.id, "approved")}>Duyệt</Button>
+        <Button variant="outline" onClick={() => deleteUser(member)}>Xoá User</Button>{credentialActions(member)}
+      </div>) : <div className="empty-state"><Check size={24} /><h3>Không có tài khoản chờ duyệt</h3><p>Tài khoản User mới sẽ xuất hiện ở đây.</p></div>}
+    </section>
+    <section className="content-panel team-panel">
+      <div className="panel-heading"><div><span className="panel-index">ACCOUNT DIRECTORY</span><h2>Tất cả tài khoản</h2></div><span className="team-policy">{adminAccounts.length} Admin/Supporter · {approvedUserAccounts.length} User đã duyệt</span></div>
+      <div className="account-directory-grid">
+        <section className="account-subtable"><div className="panel-heading"><div><span className="panel-index">ADMIN ACCOUNTS</span><h3>Tài khoản Admin & Supporter</h3></div></div>{adminAccounts.length ? adminAccounts.map(member => <AccountRow key={member.id} member={member} isProtectedAdmin={isProtectedAdmin(member)} credentialActions={credentialActions} onRoleChange={onRoleChange} onRevoke={revoke} onDelete={deleteUser} setRevealed={setRevealed} />) : <div className="empty-state"><p>Chưa có tài khoản Admin.</p></div>}</section>
+        <section className="account-subtable"><div className="panel-heading"><div><span className="panel-index">APPROVED USER ACCOUNTS</span><h3>Tài khoản User đã duyệt</h3></div></div>{approvedUserAccounts.length ? approvedUserAccounts.map(member => <AccountRow key={member.id} member={member} isProtectedAdmin={false} credentialActions={credentialActions} onRoleChange={onRoleChange} onRevoke={revoke} onDelete={deleteUser} setRevealed={setRevealed} />) : <div className="empty-state"><p>Chưa có User nào được Admin duyệt.</p></div>}</section>
+      </div>
+    </section>
+    {viewTarget && <section className="content-panel team-panel" aria-label="Xem mật khẩu">
+      <h2>Xem mật khẩu · {viewTarget.username || viewTarget.name}</h2>
+      <form onSubmit={submitView} className="password-reset-form">
+        <label className="field-label">Xác nhận mật khẩu Admin của bạn<Input type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} required /></label>
+        <Button type="button" variant="outline" onClick={() => { setViewTarget(null); setCurrentPassword(""); }}>Huỷ</Button>
+        <Button type="submit" className="primary-cta">Xác nhận và xem</Button>
+      </form>
+    </section>}
+    {resetTarget && <section className="content-panel team-panel" aria-label="Đặt lại mật khẩu">
+      <h2>Đặt lại mật khẩu · {resetTarget.username || resetTarget.name}</h2>
+      <form onSubmit={submitReset} className="password-reset-form">
+        <label className="field-label">Mật khẩu mới<Input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} minLength={8} required /></label>
+        <label className="field-label">Nhập lại mật khẩu<Input type="password" autoComplete="new-password" value={passwordConfirmation} onChange={event => setPasswordConfirmation(event.target.value)} minLength={8} required /></label>
+        <Button type="button" variant="outline" onClick={() => { setResetTarget(null); setNewPassword(""); setPasswordConfirmation(""); }}>Huỷ</Button>
+        <Button type="submit" className="primary-cta">Lưu mật khẩu mới</Button>
+      </form>
+    </section>}
+  </>;
+}
+function AdminReviewView({ protocols, samples, calculators, pendingEdits, onApproveProtocol, onRejectProtocol, onEditProtocol, onApproveSample, onRejectSample, onEditSample, onApproveCalculator, onRejectCalculator, onEditCalculator, onApprovePendingEdit, onRejectPendingEdit }: { protocols: Protocol[]; samples: Sample[]; calculators: CalculatorDefinition[]; pendingEdits: PendingContentEdit[]; onApproveProtocol: (id: number) => void; onRejectProtocol: (id: number) => void; onEditProtocol: (id: number) => void; onApproveSample: (id: number) => void; onRejectSample: (id: number) => void; onEditSample: (id: number) => void; onApproveCalculator: (id: number) => void; onRejectCalculator: (id: number) => void; onEditCalculator: (id: number) => void; onApprovePendingEdit: (kind: PendingContentEdit["kind"], id: number) => void; onRejectPendingEdit: (kind: PendingContentEdit["kind"], id: number) => void }) {
+  const draftProtocols = protocols.filter(item => item.status !== "Đã duyệt");
+  const draftSamples = samples.filter(item => item.status === "Bản nháp");
+  const draftCalculators = calculators.filter(item => item.status === "Bản nháp");
+  const total = draftProtocols.length + draftSamples.length + draftCalculators.length + pendingEdits.length;
+  return <section className="content-panel team-panel"><div className="panel-heading"><div><span className="panel-index">CONTENT REVIEW / {total}</span><h2>Duyệt nội dung</h2></div><span className="team-policy">Admin approval</span></div>
+    {pendingEdits.map(item => <div className="team-row" key={`edit-${item.kind}-${item.id}`}><span className={`inventory-dot ${item.kind === "protocol" ? "teal" : "blue"}`} /><span className="team-identity"><strong>{item.title}</strong><small>{item.kind === "protocol" ? "Chỉnh sửa quy trình" : "Chỉnh sửa công cụ"} · Người gửi #{item.editorId ?? "khách"} · {item.updatedAt ? new Date(item.updatedAt).toLocaleString("vi-VN") : "Mới gửi"}</small></span><div className="review-actions"><Button className="primary-cta" onClick={() => onApprovePendingEdit(item.kind, item.id)}>Duyệt bản chỉnh sửa</Button><Button variant="outline" className="reject-content-button" onClick={() => onRejectPendingEdit(item.kind, item.id)}>Không duyệt</Button></div></div>)}
+    {draftProtocols.map(item => <div className="team-row" key={`protocol-${item.id}`}><span className="inventory-dot teal" /><span className="team-identity"><strong>{item.title}</strong><small>Quy trình · {item.owner}</small></span><div className="review-actions"><Button variant="outline" onClick={() => onEditProtocol(Number(item.id))}>Chỉnh sửa</Button><Button className="primary-cta" onClick={() => onApproveProtocol(Number(item.id))}>Duyệt</Button><Button variant="outline" className="reject-content-button" onClick={() => onRejectProtocol(Number(item.id))}>Không duyệt và xoá</Button></div></div>)}
+    {draftSamples.map(item => <div className="team-row" key={`sample-${item.id}`}><span className="inventory-dot amber" /><span className="team-identity"><strong>{item.name}</strong><small>Mục lý thuyết · {item.group}</small></span><div className="review-actions"><Button variant="outline" onClick={() => onEditSample(Number(item.id))}>Chỉnh sửa</Button><Button className="primary-cta" onClick={() => onApproveSample(Number(item.id))}>Duyệt</Button><Button variant="outline" className="reject-content-button" onClick={() => onRejectSample(Number(item.id))}>Không duyệt và xoá</Button></div></div>)}
+    {draftCalculators.map(item => <div className="team-row" key={`calculator-${item.id}`}><span className="inventory-dot blue" /><span className="team-identity"><strong>{item.name}</strong><small>Công cụ tính · {item.category}</small></span><div className="review-actions"><Button variant="outline" onClick={() => onEditCalculator(item.dbId ?? 0)}>Chỉnh sửa</Button><Button className="primary-cta" onClick={() => onApproveCalculator(item.dbId ?? 0)}>Duyệt</Button><Button variant="outline" className="reject-content-button" onClick={() => onRejectCalculator(item.dbId ?? 0)}>Không duyệt và xoá</Button></div></div>)}
+    {!total && <div className="empty-state"><Check size={24} /><h3>Không có nội dung chờ duyệt</h3><p>Nội dung mới hoặc bản chỉnh sửa từ User sẽ xuất hiện ở đây.</p></div>}
+  </section>;
+}
+function ProtocolEditorPage({ calculators, title, owner, body, steps, category, setCategory, setTitle, setOwner, setBody, setSteps, onSave, onCancel }: { calculators: CalculatorDefinition[]; title: string; owner: string; body: string; steps: ProtocolStep[]; category: ContentCategory; setCategory: (value: ContentCategory) => void; setTitle: (value: string) => void; setOwner: (value: string) => void; setBody: (value: string) => void; setSteps: React.Dispatch<React.SetStateAction<ProtocolStep[]>>; onSave: () => void; onCancel: () => void }) {
+  const updateStep = (index: number, key: keyof ProtocolStep, value: string | string[]) => setSteps(current => current.map((step, stepIndex) => stepIndex === index ? { ...step, [key]: value } : step));
+  return <><button className="back-link" onClick={onCancel}><ArrowLeft size={15} /> {category === "Custom" ? "Quay lại danh sách quy trình" : "Quay lại thí nghiệm điều kiện đặc trưng"}</button><PageIntro eyebrow="PROTOCOL BUILDER / STEP-BY-STEP" title={<>Thiết kế <em>quy trình theo bước.</em></>} description="Mỗi bước có tên, hướng dẫn chi tiết và thời gian riêng; có thể thêm, xóa hoặc sắp xếp lại trước khi lưu." action={<Button className="primary-cta" onClick={() => setSteps(current => [...current, { title: "", detail: "", time: "" }])}><Plus size={16} /> Thêm bước</Button>} /><section className="content-panel editor-panel"><div className="panel-heading"><div><span className="panel-index">PROTOCOL PAGE / STRUCTURE</span><h2>Thông tin chung</h2></div><span className="draft-badge">{PROTOCOL_CATEGORY_LABEL[category as ProtocolCategory] || (category === "Custom" ? "Bản nháp" : (category === "Hypoxia" || category === "HighPressure") ? SPECIAL_CATEGORY_LABEL[category] : TOOL_GROUP_LABEL[category as ToolGroup])}</span></div><label className="field-label">Nhóm quy trình<select value={category} onChange={event => setCategory(event.target.value as ContentCategory)}><option value="ProtocolCells">Quy trình cho Tế bào</option><option value="ProtocolPCR">Quy trình cho PCR</option><option value="ProtocolEvaluation">Quy trình đánh giá</option><option value="ProtocolStaining">Quy trình nhuộm</option><option value="Hypoxia">Nuôi cấy Hypoxia</option><option value="HighPressure">Nuôi cấy áp suất cao</option></select></label><label className="field-label">Tên quy trình<Input value={title} onChange={event => setTitle(event.target.value)} placeholder="VD: Perfusion" /></label><label className="field-label">Người viết quy trình<Input value={owner} onChange={event => setOwner(event.target.value)} placeholder="VD: Nguyễn Văn A" /></label><label className="field-label">Tóm tắt quy trình<Textarea value={body} onChange={event => setBody(event.target.value)} placeholder="Mục tiêu, phạm vi và điều kiện áp dụng…" rows={4} /></label><div className="step-editor-list">{steps.map((step, index) => <div className="step-editor-card" key={`draft-step-${index}`}><div className="step-editor-head"><span className="step-marker"><span>{String(index + 1).padStart(2, "0")}</span></span><strong>Bước {index + 1}</strong>{steps.length > 1 && <button className="icon-button danger" onClick={() => setSteps(current => current.filter((_, stepIndex) => stepIndex !== index))} aria-label={`Xóa bước ${index + 1}`}><Trash2 size={15} /></button>}</div><div className="step-editor-grid"><label className="field-label">Tên bước<Input value={step.title} onChange={event => updateStep(index, "title", event.target.value)} placeholder="VD: Cân gan" /></label><label className="field-label">Thời gian / điều kiện<Input value={step.time} onChange={event => updateStep(index, "time", event.target.value)} placeholder="VD: 10 phút · 4°C" /></label></div><label className="field-label">Hướng dẫn chi tiết<Textarea value={step.detail} onChange={event => updateStep(index, "detail", event.target.value)} placeholder="Mô tả thao tác, thể tích, tốc độ ly tâm, nhiệt độ…" rows={4} /></label><div className="field-label linked-tool-selects"><span>Công cụ liên kết <small>Chọn tối đa 3 công cụ. Mỗi ô giữ vị trí riêng; khi mở một tool, chỉ tool được bấm sẽ hiện.</small></span>{[0, 1, 2].map(slot => { const selectedIds = step.calculatorIds ?? []; const slotValue = selectedIds[slot] ?? ""; return <label key={`linked-tool-${slot}`} className="linked-tool-slot">Tool {slot + 1}<select value={slotValue} onChange={event => { const next = [selectedIds[0] ?? "", selectedIds[1] ?? "", selectedIds[2] ?? ""]; next[slot] = event.target.value; updateStep(index, "calculatorIds", next); }}><option value="">Không chọn</option>{calculators.map(tool => <option key={tool.id} value={tool.id} disabled={selectedIds.includes(tool.id) && slotValue !== tool.id}>{tool.name} · {TOOL_GROUP_LABEL[tool.category as ToolGroup] || tool.category}</option>)}</select></label>; })}</div></div>)}</div><div className="editor-footer"><span><FilePenLine size={14} /> Các bước được lưu riêng trong database</span><div><Button variant="outline" onClick={onCancel}>Hủy</Button><Button onClick={onSave} className="primary-cta"><Check size={15} /> Lưu bản nháp</Button></div></div></section></>;
+}
