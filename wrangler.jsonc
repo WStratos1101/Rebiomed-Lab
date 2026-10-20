@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "web-for-laboratory",
+  "name": "protocol",
   "main": "cloudflare/worker.ts",
   "compatibility_date": "2025-10-14",
   "compatibility_flags": [
