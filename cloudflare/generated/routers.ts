@@ -3,7 +3,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { getFormulaVariables } from "@shared/formulaMath";
 import { systemRouter } from "../systemRouter";
-import { adminProcedure, isAdminLikeRole, protectedProcedure, publicProcedure, router } from "./trpc";
+import { adminProcedure, isAdminLikeRole, protectedProcedure, publicProcedure, router, sharedEditorProcedure, assertNotGuest } from "./trpc";
 import { verifyPassword } from "./password";
 import { decryptPasswordForAccount } from "./passwordVault";
 import { createCalculatorDraft, createChemicalRecipe, createEmailUser, createProtocolDraft, createSampleDraft, deleteCalculatorById, deleteChemicalRecipeById, deleteProtocolById, deleteSampleById, deleteUserById, getCalculatorById, getChemicalRecipeById, getLabContent, getProtocolById, getSampleById, getUserByEmail, getUserById, getUserByUsernameOrEmail, isDedicatedSupporterAccount, isSupporterAccount, listChemicalRecipes, listTeamMembers, setCalculatorStatus, setChemicalRecipeStatus, setProtocolStatus, setSampleStatus, setUserPassword, updateCalculatorById, updateChemicalRecipe, updateProtocolDraft, updateSampleDraft, updateUserApproval, listPendingContentEdits, approvePendingContentEdit, rejectPendingContentEdit, updateUserProfile, updateUserRole } from "./db";
@@ -12,10 +12,15 @@ import { getSessionCookieOptions } from "../cookies";
 import { ONE_YEAR_MS } from "@shared/const";
 import { sdk } from "../sdk";
 import { createExperimentLog, createFeedback, deleteExperimentLog, deleteExperimentLogs, deleteFeedback, listAdminFeedbacks, listExperimentLogs, listMyFeedbacks, resolveFeedback, updateExperimentLog } from "./db";
+function getDisplayRole(role: string): "admin" | "user" | "guest" {
+    if (role === "admin" || role === "supporter") return "admin";
+    if (role === "guest") return "guest";
+    return "user";
+}
 export const appRouter = router({
     system: systemRouter,
     auth: router({
-        me: publicProcedure.query(({ ctx }) => ctx.user ? { id: ctx.user.id, username: ctx.user.username, name: ctx.user.name, email: ctx.user.email, role: isAdminLikeRole(ctx.user.role) ? "admin" as const : "user" as const, isSupporter: ctx.user.role === "supporter", approvalStatus: ctx.user.approvalStatus } : null),
+        me: publicProcedure.query(({ ctx }) => ctx.user ? { id: ctx.user.id, username: ctx.user.username, name: ctx.user.name, email: ctx.user.email, role: getDisplayRole(ctx.user.role), isSupporter: ctx.user.role === "supporter", approvalStatus: ctx.user.approvalStatus } : null),
         adminLogin: publicProcedure.input(z.object({ identifier: z.string().trim().min(1).max(320), password: z.string().min(1).max(200) })).mutation(async ({ input, ctx }) => {
             const user = await getUserByUsernameOrEmail(input.identifier);
             if (!user || !isAdminLikeRole(user.role) || user.approvalStatus !== "approved" || !verifyPassword(input.password, user.passwordHash))
@@ -30,12 +35,12 @@ export const appRouter = router({
                 throw new TRPCError({ code: "UNAUTHORIZED", message: "Tài khoản chưa được duyệt hoặc thông tin đăng nhập không đúng." });
             const token = await sdk.createSessionToken(user.openId, { name: user.name ?? user.username ?? "User" });
             ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: ONE_YEAR_MS });
-            return { id: user.id, username: user.username, name: user.name, email: user.email, role: "user" as const };
+            return { id: user.id, username: user.username, name: user.name, email: user.email, role: getDisplayRole(user.role) };
         }),
         register: publicProcedure.input(z.object({ username: z.string().trim().min(3).max(80).regex(/^[A-Za-z0-9_.-]+$/), name: z.string().trim().min(1).max(160), email: z.string().trim().email().max(320), password: z.string().min(8).max(200) })).mutation(async ({ input }) => {
             if (!runtime().REBIOMED_PASSWORD_VAULT_KEY)
                 throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Chức năng đăng ký đang được cấu hình." });
-            if (["admin", "supporter"].includes(input.username.toLowerCase()))
+            if (["admin", "supporter", "guest"].includes(input.username.toLowerCase()))
                 throw new TRPCError({ code: "CONFLICT", message: "Username này được dành riêng cho account hệ thống." });
             try {
                 await createEmailUser(input);
@@ -47,8 +52,9 @@ export const appRouter = router({
             }
             return { success: true as const, message: "Tài khoản đã được đăng ký với quyền User." };
         }),
-        updateProfile: publicProcedure.input(z.object({ email: z.string().trim().email().max(320), currentPassword: z.string().min(1).max(200), newPassword: z.string().min(8).max(200).optional() })).mutation(async ({ input, ctx }) => {
-            if (!ctx.user || isAdminLikeRole(ctx.user.role))
+        updateProfile: protectedProcedure.input(z.object({ email: z.string().trim().email().max(320), currentPassword: z.string().min(1).max(200), newPassword: z.string().min(8).max(200).optional() })).mutation(async ({ input, ctx }) => {
+            assertNotGuest(ctx.user.role);
+            if (isAdminLikeRole(ctx.user.role))
                 throw new TRPCError({ code: "FORBIDDEN", message: "Chỉ User mới có thể chỉnh sửa hồ sơ ở mục này." });
             if (!verifyPassword(input.currentPassword, ctx.user.passwordHash))
                 throw new TRPCError({ code: "UNAUTHORIZED", message: "Mật khẩu hiện tại không đúng." });
@@ -66,7 +72,7 @@ export const appRouter = router({
         }),
     }),
     experimentLogs: router({
-        list: protectedProcedure.query(({ ctx }) => listExperimentLogs(ctx.user.id)),
+        list: protectedProcedure.query(({ ctx }) => listExperimentLogs(ctx.user.id, ctx.user.role === "guest")),
         create: protectedProcedure.input(z.object({
             templateName: z.string().trim().max(160).default(""),
             experimentName: z.string().trim().max(255).default(""),
@@ -84,7 +90,7 @@ export const appRouter = router({
             numericNote: z.string().max(10000).default(""),
             issue: z.string().max(10000).default(""),
         })).mutation(async ({ input, ctx }) => {
-            await createExperimentLog({ ...input, ownerId: ctx.user.id });
+            await createExperimentLog({ ...input, ownerId: ctx.user.id }, ctx.user.role === "guest");
             return { success: true as const };
         }),
         update: protectedProcedure.input(z.object({
@@ -106,21 +112,21 @@ export const appRouter = router({
             issue: z.string().max(10000).default(""),
         })).mutation(async ({ input, ctx }) => {
             const { id, ...values } = input;
-            await updateExperimentLog(id, ctx.user.id, values);
+            await updateExperimentLog(id, ctx.user.id, values, ctx.user.role === "guest");
             return { success: true as const };
         }),
         delete: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
-            await deleteExperimentLog(input.id, ctx.user.id);
+            await deleteExperimentLog(input.id, ctx.user.id, ctx.user.role === "guest");
             return { success: true as const };
         }),
         deleteMany: protectedProcedure.input(z.object({ ids: z.array(z.number().int().positive()).max(500).optional() })).mutation(async ({ input, ctx }) => {
-            await deleteExperimentLogs(input.ids, ctx.user.id);
+            await deleteExperimentLogs(input.ids, ctx.user.id, ctx.user.role === "guest");
             return { success: true as const };
         }),
     }),
     feedbacks: router({
         mine: protectedProcedure.query(({ ctx }) => listMyFeedbacks(ctx.user.id)),
-        create: protectedProcedure.input(z.object({
+        create: sharedEditorProcedure.input(z.object({
             category: z.enum(["chemical", "equipment", "supplies"]),
             itemName: z.string().trim().min(1).max(255),
             condition: z.string().trim().min(1).max(80),
@@ -142,7 +148,7 @@ export const appRouter = router({
             await createFeedback({ ...input, reporterId: ctx.user.id });
             return { success: true as const };
         }),
-        deleteMine: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        deleteMine: sharedEditorProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
             await deleteFeedback(input.id, ctx.user.id);
             return { success: true as const };
         }),
@@ -161,8 +167,8 @@ export const appRouter = router({
         }),
     }),
     content: router({
-        all: publicProcedure.query(() => getLabContent()),
-        createDraft: publicProcedure
+        all: publicProcedure.query(({ ctx }) => getLabContent(ctx.user?.role ?? "guest")),
+        createDraft: sharedEditorProcedure
             .input(z.object({ kind: z.enum(["protocol", "sample"]), title: z.string().trim().min(1).max(255), body: z.string().max(10000).default(""), owner: z.string().trim().min(1).max(160).default("Lab editor"), category: z.enum(["Custom", "Hypoxia", "HighPressure", "ProtocolCells", "ProtocolPCR", "ProtocolEvaluation", "ProtocolStaining"]).default("Custom"), steps: z.array(z.object({ title: z.string().trim().min(1).max(255), detail: z.string().max(5000), time: z.string().max(80), calculatorIds: z.array(z.string().max(120)).max(3).refine(ids => { const nonEmpty = ids.filter(Boolean); return new Set(nonEmpty).size === nonEmpty.length; }, "Không được liên kết trùng công cụ.").default([]) })).optional() }))
             .mutation(async ({ input, ctx }) => {
             const approved = isAdminLikeRole(ctx.user?.role);
@@ -172,7 +178,7 @@ export const appRouter = router({
                 await createSampleDraft({ name: input.title, description: input.body });
             return { success: true } as const;
         }),
-        createCalculator: publicProcedure
+        createCalculator: sharedEditorProcedure
             .input(z.object({ name: z.string().trim().min(1).max(160), formula: z.string().trim().min(1).max(160), description: z.string().max(10000).default(""), category: z.enum(["Chemicals", "Cells", "PCR", "Custom", "Hypoxia", "HighPressure"]).default("Custom"), inputUnits: z.record(z.string(), z.string().max(32)).default({}), outputUnit: z.string().max(32).default(""), variables: z.array(z.object({ key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), label: z.string().trim().min(1).max(120), unit: z.string().max(32) })).max(8).default([]) }))
             .mutation(async ({ input, ctx }) => {
             try {
@@ -190,7 +196,7 @@ export const appRouter = router({
             await createCalculatorDraft(input, isAdminLikeRole(ctx.user?.role));
             return { success: true } as const;
         }),
-        updateCalculator: publicProcedure
+        updateCalculator: sharedEditorProcedure
             .input(z.object({ id: z.number().int().positive(), name: z.string().trim().min(1).max(160), formula: z.string().trim().min(1).max(160), description: z.string().max(10000).default(""), category: z.enum(["Chemicals", "Cells", "PCR", "Custom", "Hypoxia", "HighPressure"]).default("Custom"), inputUnits: z.record(z.string(), z.string().max(32)).default({}), outputUnit: z.string().max(32).default(""), variables: z.array(z.object({ key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), label: z.string().trim().min(1).max(120), unit: z.string().max(32) })).max(8).default([]) }))
             .mutation(async ({ input, ctx }) => {
             const current = await getCalculatorById(input.id);
@@ -211,7 +217,7 @@ export const appRouter = router({
             await updateCalculatorById(input.id, input, ctx.user?.id, ctx.user?.role);
             return { success: true } as const;
         }),
-        updateDraft: publicProcedure
+        updateDraft: sharedEditorProcedure
             .input(z.object({ id: z.number().int().positive(), kind: z.enum(["protocol", "sample"]), title: z.string().trim().min(1).max(255), body: z.string().max(10000).default(""), owner: z.string().trim().min(1).max(160).default("Lab editor"), category: z.enum(["Custom", "Hypoxia", "HighPressure", "ProtocolCells", "ProtocolPCR", "ProtocolEvaluation", "ProtocolStaining"]).default("Custom"), steps: z.array(z.object({ title: z.string().trim().min(1).max(255), detail: z.string().max(5000), time: z.string().max(80), calculatorIds: z.array(z.string().max(120)).max(3).refine(ids => { const nonEmpty = ids.filter(Boolean); return new Set(nonEmpty).size === nonEmpty.length; }, "Không được liên kết trùng công cụ.").default([]) })).optional() }))
             .mutation(async ({ input, ctx }) => {
             if (input.kind === "protocol") {
@@ -230,7 +236,7 @@ export const appRouter = router({
             }
             return { success: true } as const;
         }),
-        deleteProtocol: publicProcedure
+        deleteProtocol: sharedEditorProcedure
             .input(z.object({ id: z.number().int().positive() }))
             .mutation(async ({ input, ctx }) => {
             const current = await getProtocolById(input.id);
@@ -250,7 +256,7 @@ export const appRouter = router({
             await deleteProtocolById(input.id);
             return { success: true as const };
         }),
-        deleteSample: publicProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        deleteSample: sharedEditorProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
             const current = await getSampleById(input.id);
             if (!current)
                 throw new TRPCError({ code: "NOT_FOUND", message: "Không tìm thấy mục lý thuyết." });
@@ -259,7 +265,7 @@ export const appRouter = router({
             await deleteSampleById(input.id);
             return { success: true as const };
         }),
-        deleteCalculator: publicProcedure
+        deleteCalculator: sharedEditorProcedure
             .input(z.object({ id: z.number().int().positive() }))
             .mutation(async ({ input, ctx }) => { const current = await getCalculatorById(input.id); if (!current)
             throw new TRPCError({ code: "NOT_FOUND", message: "Không tìm thấy công cụ." }); if (current.status !== "Bản nháp" && !isAdminLikeRole(ctx.user?.role))
@@ -299,8 +305,8 @@ export const appRouter = router({
         }),
     }),
     chemicals: router({
-        list: publicProcedure.query(() => listChemicalRecipes()),
-        create: publicProcedure.input(z.object({
+        list: publicProcedure.query(({ ctx }) => listChemicalRecipes(ctx.user?.role ?? "guest")),
+        create: sharedEditorProcedure.input(z.object({
             name: z.string().trim().min(1).max(255),
             group: z.string().trim().min(1).max(120),
             baseVolume: z.number().positive(),

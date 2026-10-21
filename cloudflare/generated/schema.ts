@@ -7,7 +7,7 @@ export const users = sqliteTable("users", {
     name: text("name"),
     email: text("email"),
     loginMethod: text("loginMethod"),
-    role: text("role", { enum: ["admin", "supporter", "researcher", "viewer", "user"] }).default("researcher").notNull(),
+    role: text("role", { enum: ["admin", "supporter", "researcher", "viewer", "user", "guest"] }).default("researcher").notNull(),
     approvalStatus: text("approvalStatus", { enum: ["pending", "approved", "rejected"] }).default("approved").notNull(),
     passwordHash: text("passwordHash"),
     passwordVault: text("passwordVault"),

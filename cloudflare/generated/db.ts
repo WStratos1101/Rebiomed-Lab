@@ -11,6 +11,26 @@ async function ensurePendingEditColumns(_db: unknown) { }
 async function ensureExperimentLogsTable(_db: unknown) { }
 async function ensureFeedbackTable(_db: unknown) { }
 async function ensureSupporterIdentity(_db: unknown) { }
+const GUEST_USERNAME = "Guest";
+let guestIdentityReady: Promise<void> | null = null;
+// Preserve the intentionally shared Guest demo account. Its stored password is hashed, not plaintext.
+async function ensureGuestIdentity(db: NonNullable<Awaited<ReturnType<typeof getDb>>>) {
+    if (!guestIdentityReady) {
+        guestIdentityReady = (async () => {
+            const existing = await db.select({ id: users.id }).from(users).where(eq(users.username, GUEST_USERNAME)).limit(1);
+            if (existing.length) {
+                await db.update(users).set({ name: "Guest", role: "guest", approvalStatus: "approved", loginMethod: "email" }).where(eq(users.id, existing[0].id));
+                return;
+            }
+            const openId = createHash("sha256").update("rebiomed-guest-account").digest("hex");
+            await db.insert(users).values({ openId, username: GUEST_USERNAME, name: "Guest", email: null, passwordHash: hashPassword("123456"), passwordVault: null, loginMethod: "email", role: "guest", approvalStatus: "approved" }).onConflictDoNothing();
+        })().then(() => undefined).catch(error => { guestIdentityReady = null; throw error; });
+    }
+    await guestIdentityReady;
+}
+async function purgeGuestExperimentLogs(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, ownerId: number) {
+    await db.delete(experimentLogs).where(and(eq(experimentLogs.ownerId, ownerId), lt(experimentLogs.createdAt, new Date(Date.now() - 2 * 60 * 60 * 1000))));
+}
 export function isSupporterAccount(user: {
     role?: string | null;
 } | null | undefined) {
@@ -95,17 +115,21 @@ export async function getUserByUsernameOrEmail(identifier: string) {
     if (!db)
         return undefined;
     await ensureSupporterIdentity(db);
-    const normalized = identifier.trim();
+    const requestedIdentifier = identifier.trim();
+    const isGuestLogin = requestedIdentifier.toLowerCase() === GUEST_USERNAME.toLowerCase();
+    if (isGuestLogin) await ensureGuestIdentity(db);
+    const normalized = isGuestLogin ? GUEST_USERNAME : requestedIdentifier;
     const result = normalized.includes("@")
         ? await db.select().from(users).where(eq(users.email, normalized.toLowerCase())).limit(1)
         : await db.select().from(users).where(eq(users.username, normalized)).limit(1);
     return result[0] ? normalizeSupporterUser(result[0]) : undefined;
 }
-export async function listExperimentLogs(ownerId: number) {
+export async function listExperimentLogs(ownerId: number, isGuest = false) {
     const db = await getDb();
     if (!db)
         return [];
     await ensureExperimentLogsTable(db);
+    if (isGuest) await purgeGuestExperimentLogs(db, ownerId);
     return db.select().from(experimentLogs).where(eq(experimentLogs.ownerId, ownerId)).orderBy(asc(experimentLogs.workDate), asc(experimentLogs.id));
 }
 export async function createExperimentLog(input: {
@@ -125,11 +149,12 @@ export async function createExperimentLog(input: {
     note?: string;
     numericNote?: string;
     issue?: string;
-}) {
+}, isGuest = false) {
     const db = await getDb();
     if (!db)
         throw new Error("Database is not available");
     await ensureExperimentLogsTable(db);
+    if (isGuest) await purgeGuestExperimentLogs(db, input.ownerId);
     await db.insert(experimentLogs).values(input);
 }
 export async function updateExperimentLog(id: number, ownerId: number, input: {
@@ -148,25 +173,28 @@ export async function updateExperimentLog(id: number, ownerId: number, input: {
     note?: string;
     numericNote?: string;
     issue?: string;
-}) {
+}, isGuest = false) {
     const db = await getDb();
     if (!db)
         throw new Error("Database is not available");
     await ensureExperimentLogsTable(db);
+    if (isGuest) await purgeGuestExperimentLogs(db, ownerId);
     await db.update(experimentLogs).set(input).where(and(eq(experimentLogs.id, id), eq(experimentLogs.ownerId, ownerId)));
 }
-export async function deleteExperimentLog(id: number, ownerId: number) {
+export async function deleteExperimentLog(id: number, ownerId: number, isGuest = false) {
     const db = await getDb();
     if (!db)
         throw new Error("Database is not available");
     await ensureExperimentLogsTable(db);
+    if (isGuest) await purgeGuestExperimentLogs(db, ownerId);
     await db.delete(experimentLogs).where(and(eq(experimentLogs.id, id), eq(experimentLogs.ownerId, ownerId)));
 }
-export async function deleteExperimentLogs(ids: number[] | undefined, ownerId: number) {
+export async function deleteExperimentLogs(ids: number[] | undefined, ownerId: number, isGuest = false) {
     const db = await getDb();
     if (!db)
         throw new Error("Database is not available");
     await ensureExperimentLogsTable(db);
+    if (isGuest) await purgeGuestExperimentLogs(db, ownerId);
     const ownerFilter = eq(experimentLogs.ownerId, ownerId);
     if (!ids) {
         await db.delete(experimentLogs).where(ownerFilter);
@@ -278,7 +306,7 @@ export async function deleteUserById(id: number) {
     return true;
 }
 export async function ensureLabSeed() { }
-export async function getLabContent() {
+export async function getLabContent(viewerRole?: string | null) {
     const db = await getDb();
     if (!db)
         throw new Error("Database is not available");
@@ -289,6 +317,11 @@ export async function getLabContent() {
         db.select({ id: calculators.id, slug: calculators.slug, name: calculators.name, category: calculators.category, formula: calculators.formula, description: calculators.description, config: calculators.config, status: calculators.status, active: calculators.active }).from(calculators).orderBy(asc(calculators.id)),
         db.select().from(experimentRuns).orderBy(asc(experimentRuns.id)),
     ]);
+    if (viewerRole === "guest") {
+        const seenCategories = new Set<string>();
+        const guestProtocols = protocolRows.filter(row => row.status === "Đã duyệt" && !seenCategories.has(row.category) && seenCategories.add(row.category));
+        return { protocols: guestProtocols, samples: sampleRows, calculators: calculatorRows.filter(row => row.active === 1), runs: [] };
+    }
     return { protocols: protocolRows, samples: sampleRows, calculators: calculatorRows, runs: runRows };
 }
 type ChemicalRecipeInput = {
@@ -319,12 +352,13 @@ function toChemicalRecipe(row: typeof chemicalRecipes.$inferSelect) {
         status: row.status === "Bản nháp" ? "Bản nháp" : "Đã duyệt",
     };
 }
-export async function listChemicalRecipes() {
+export async function listChemicalRecipes(viewerRole?: string | null) {
     const db = await getDb();
     if (!db)
         return seedChemicalRecipes.map(recipe => ({ ...recipe, dbId: undefined }));
     const rows = await db.select().from(chemicalRecipes).where(eq(chemicalRecipes.active, 1)).orderBy(asc(chemicalRecipes.id));
-    return rows.map(toChemicalRecipe);
+    const recipes = rows.map(toChemicalRecipe);
+    return viewerRole === "guest" ? recipes.slice(0, 2) : recipes;
 }
 export async function createChemicalRecipe(input: ChemicalRecipeInput) {
     const db = await getDb();
@@ -558,7 +592,7 @@ export async function listTeamMembers(viewerUsername?: string | null) {
     if (!db)
         return [];
     await ensureSupporterIdentity(db);
-    const members = await db.select({ id: users.id, username: users.username, name: users.name, email: users.email, role: users.role, approvalStatus: users.approvalStatus, loginMethod: users.loginMethod, lastSignedIn: users.lastSignedIn }).from(users).orderBy(asc(users.id));
+    const members = await db.select({ id: users.id, username: users.username, name: users.name, email: users.email, role: users.role, approvalStatus: users.approvalStatus, loginMethod: users.loginMethod, lastSignedIn: users.lastSignedIn }).from(users).where(sql`LOWER(TRIM(COALESCE(${users.username}, ''))) <> 'guest'`).orderBy(asc(users.id));
     return members.map(normalizeSupporterUser);
 }
 export async function updateUserRole(id: number, role: "admin" | "supporter" | "user") {
