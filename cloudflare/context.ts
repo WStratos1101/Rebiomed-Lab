@@ -1,6 +1,7 @@
 import { serialize, type SerializeOptions } from "cookie";
 import type { User } from "./generated/schema";
 import { sdk } from "./sdk";
+import { trustedCloudflareIp } from "./guestIpGuard";
 export type TrpcContext = {
     req: {
         headers: {
@@ -17,6 +18,7 @@ export type TrpcContext = {
         setHeader(name: string, value: string): void;
     };
     user: User | null;
+    clientIp: string | null;
 };
 export async function createContext(request: Request, responseHeaders: Headers): Promise<TrpcContext> {
     const req = { headers: { cookie: request.headers.get("cookie") ?? undefined, authorization: request.headers.get("authorization") ?? undefined }, path: new URL(request.url).pathname };
@@ -28,5 +30,6 @@ export async function createContext(request: Request, responseHeaders: Headers):
             setHeader(name, value) { responseHeaders.set(name, value); },
         },
         user: await sdk.authenticateRequest(req),
+        clientIp: trustedCloudflareIp(request),
     };
 }

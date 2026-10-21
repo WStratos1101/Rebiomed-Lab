@@ -50,12 +50,13 @@ const recipeToDraft = (recipe: StoredChemicalRecipe): RecipeDraft => ({
 const newRecipeDraft = (): RecipeDraft => ({ name: "", group: "Dung dịch mới", baseVolume: "100", baseUnit: "mL", stock: "", note: "", ingredients: [emptyIngredient()], method: "" });
 type ChemicalTab = "chemicals" | "stock" | "master-cdna" | "master-qdna" | "icc" | "cdna" | "qdna";
 type ChemicalCalculationMode = "total" | "remaining";
-export function ChemicalMixingView({ initialTab = "chemicals", isAdmin = false, userId }: {
+export function ChemicalMixingView({ initialTab = "chemicals", isAdmin = false, isGuest = false, userId }: {
     initialTab?: ChemicalTab;
     isAdmin?: boolean;
+    isGuest?: boolean;
     userId?: number;
 }) {
-    const [tab, setTab] = useState<ChemicalTab>(initialTab);
+    const [tab, setTab] = useState<ChemicalTab>(isGuest ? "chemicals" : initialTab);
     const [selectedId, setSelectedId] = useState(seedChemicalRecipes[0].id);
     const [totalVolume, setTotalVolume] = useState(String(seedChemicalRecipes[0].baseVolume));
     const [totalUnit, setTotalUnit] = useState<ChemicalUnit>(seedChemicalRecipes[0].baseUnit);
@@ -74,7 +75,7 @@ export function ChemicalMixingView({ initialTab = "chemicals", isAdmin = false, 
     const approveMutation = trpc.chemicals.approve.useMutation({ onSuccess: async () => { await utils.chemicals.list.invalidate(); toast.success("Đã duyệt cách pha hoá chất."); }, onError: error => toast.error(error.message) });
     const recipes = ((recipesQuery.data?.length ? recipesQuery.data : seedChemicalRecipes) as StoredChemicalRecipe[]).filter(recipe => recipe.group !== "Dung dịch nhuộm ICC");
     const selected = recipes.find(recipe => recipe.id === selectedId) ?? recipes[0];
-    useEffect(() => setTab(initialTab), [initialTab]);
+    useEffect(() => setTab(isGuest ? "chemicals" : initialTab), [initialTab, isGuest]);
     useEffect(() => {
         if (!selected)
             return;
@@ -114,19 +115,20 @@ export function ChemicalMixingView({ initialTab = "chemicals", isAdmin = false, 
         setEditorOpen(false);
         scrollToChemicalCalculator();
     };
-    const openCreate = () => { setEditingId(null); setDraft(newRecipeDraft()); setEditorOpen(true); setTab("chemicals"); };
-    const canManage = (_recipe: StoredChemicalRecipe) => isAdmin;
+    const openCreate = () => { if (isGuest) return toast.info("Tài khoản Guest chỉ được sử dụng chức năng tính toán demo."); setEditingId(null); setDraft(newRecipeDraft()); setEditorOpen(true); setTab("chemicals"); };
+    const canManage = (_recipe: StoredChemicalRecipe) => isAdmin && !isGuest;
     const openEdit = (recipe: StoredChemicalRecipe) => { if (!canManage(recipe))
         return toast.error("Chỉ Admin được chỉnh sửa cách pha đã duyệt."); setEditingId(recipe.dbId ?? null); setDraft(recipeToDraft(recipe)); setEditorOpen(true); setTab("chemicals"); };
     const deleteRecipe = (recipe: StoredChemicalRecipe) => { if (!recipe.dbId)
         return toast.error("Bản mẫu không thể xoá."); if (!canManage(recipe))
         return toast.error("Chỉ Admin được xoá cách pha đã duyệt."); if (window.confirm(`Xoá cách pha ${recipe.name}?`) && window.confirm("Xác nhận lần cuối: thao tác này không thể hoàn tác."))
         deleteMutation.mutate({ id: recipe.dbId }); };
-    const approveRecipe = (recipe: StoredChemicalRecipe) => { if (!isAdmin || !recipe.dbId)
+    const approveRecipe = (recipe: StoredChemicalRecipe) => { if (!isAdmin || isGuest || !recipe.dbId)
         return; if (window.confirm(`Duyệt cách pha ${recipe.name}?`))
         approveMutation.mutate({ id: recipe.dbId }); };
     const updateIngredient = (index: number, patch: Partial<IngredientDraft>) => setDraft(current => ({ ...current, ingredients: current.ingredients.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) }));
     const saveDraft = () => {
+        if (isGuest) return toast.error("Guest không thể lưu công thức dùng chung.");
         const baseVolume = parseLocaleNumber(draft.baseVolume);
         if (!draft.name.trim() || !draft.group.trim() || !Number.isFinite(baseVolume) || baseVolume <= 0 || !draft.method.trim()) {
             toast.error("Vui lòng nhập tên, nhóm, thể tích gốc hợp lệ và method hướng dẫn pha.");
@@ -151,18 +153,18 @@ export function ChemicalMixingView({ initialTab = "chemicals", isAdmin = false, 
     const busy = createMutation.isPending || updateMutation.isPending || deleteMutation.isPending || approveMutation.isPending;
     const isMasterMix = tab === "master-cdna" || tab === "master-qdna" || tab === "cdna" || tab === "qdna";
     if (!selected && !isMasterMix && tab !== "icc")
-        return <div className="empty-state"><Beaker size={24}/><h3>Chưa có công thức pha</h3><p>Hãy tạo cách pha đầu tiên.</p><Button className="primary-cta" onClick={openCreate}><Plus size={15}/> Thêm cách pha</Button></div>;
+        return <div className="empty-state"><Beaker size={24}/><h3>Chưa có công thức pha</h3><p>{isGuest ? "Chưa có công thức demo được công bố." : "Hãy tạo cách pha đầu tiên."}</p>{!isGuest && <Button className="primary-cta" onClick={openCreate}><Plus size={15}/> Thêm cách pha</Button>}</div>;
     return <div className="chemical-page">
-    <PageIntro eyebrow="CHEMISTRY WORKBENCH" title={<>Pha <em>hoá chất.</em></>} description={tab === "icc" ? "Cách pha các loại hoá chất sử dụng cho quy trình ICC" : "Tính nhanh lượng cần cân/đong theo tổng thể tích và tự biên soạn các cách pha theo từng chất."} action={<Button className="primary-cta" onClick={openCreate}><Plus size={15}/> Thêm cách pha</Button>}/>
+    <PageIntro eyebrow="CHEMISTRY WORKBENCH" title={<>Pha <em>hoá chất.</em></>} description={tab === "icc" ? "Cách pha các loại hoá chất sử dụng cho quy trình ICC" : "Tính nhanh lượng cần cân/đong theo tổng thể tích và tự biên soạn các cách pha theo từng chất."} action={!isGuest ? <Button className="primary-cta" onClick={openCreate}><Plus size={15}/> Thêm cách pha</Button> : undefined}/>
     <div className="chemical-tabs" role="tablist" aria-label="Pha hoá chất">
       <button className={tab === "chemicals" ? "active" : ""} onClick={() => setTab("chemicals")}><Calculator size={16}/> Hoá chất</button>
-      <button className={isMasterMix ? "active" : ""} onClick={() => setTab("master-cdna")}><FlaskConical size={16}/> Master Mix <span>2</span></button>
-      <button className={tab === "icc" ? "active" : ""} onClick={() => setTab("icc")}><FlaskConical size={16}/> Nhuộm ICC</button>
-      <button className={tab === "stock" ? "active" : ""} onClick={() => setTab("stock")}><Table2 size={16}/> Hoá chất stock <span>{recipes.length}</span></button>
+      {!isGuest && <button className={isMasterMix ? "active" : ""} onClick={() => setTab("master-cdna")}><FlaskConical size={16}/> Master Mix <span>2</span></button>}
+      {!isGuest && <button className={tab === "icc" ? "active" : ""} onClick={() => setTab("icc")}><FlaskConical size={16}/> Nhuộm ICC</button>}
+      {!isGuest && <button className={tab === "stock" ? "active" : ""} onClick={() => setTab("stock")}><Table2 size={16}/> Hoá chất stock <span>{recipes.length}</span></button>}
     </div>
     {isMasterMix && <div className="master-mix-subtabs" role="tablist" aria-label="Các bảng Master Mix"><button className={tab === "master-cdna" || tab === "cdna" ? "active" : ""} onClick={() => setTab("master-cdna")}>Master Mix cDNA</button><button className={tab === "master-qdna" || tab === "qdna" ? "active" : ""} onClick={() => setTab("master-qdna")}>Master Mix qDNA</button></div>}
     {recipesQuery.isError && <div className="chemical-warning"><Info size={15}/> Không tải được thư viện đã lưu; đang hiển thị dữ liệu mẫu. Các thay đổi mới sẽ được lưu khi database hoạt động trở lại.</div>}
-    {editorOpen && <RecipeEditor draft={draft} setDraft={setDraft} updateIngredient={updateIngredient} onAddIngredient={() => setDraft(current => ({ ...current, ingredients: [...current.ingredients, emptyIngredient()] }))} onRemoveIngredient={index => setDraft(current => ({ ...current, ingredients: current.ingredients.filter((_, itemIndex) => itemIndex !== index) }))} onSave={saveDraft} onCancel={() => setEditorOpen(false)} busy={busy} editing={Boolean(editingId)}/>}
+    {editorOpen && !isGuest && <RecipeEditor draft={draft} setDraft={setDraft} updateIngredient={updateIngredient} onAddIngredient={() => setDraft(current => ({ ...current, ingredients: [...current.ingredients, emptyIngredient()] }))} onRemoveIngredient={index => setDraft(current => ({ ...current, ingredients: current.ingredients.filter((_, itemIndex) => itemIndex !== index) }))} onSave={saveDraft} onCancel={() => setEditorOpen(false)} busy={busy} editing={Boolean(editingId)}/>}
     {tab === "icc" ? <IccStainingCalculator /> : tab === "master-qdna" || tab === "qdna" ? <QdnaMasterMixCalculator userId={userId}/> : tab === "master-cdna" || tab === "cdna" ? <CdnaMasterMixCalculator userId={userId}/> : tab === "chemicals" ? <div className="chemical-workspace">
       <aside className="chemical-recipe-list content-panel"><div className="panel-index">RECIPES / {recipes.length}</div>{recipes.map(recipe => <button key={recipe.id} className={recipe.id === selected.id ? "active" : ""} onClick={() => chooseRecipe(recipe.id)}><span className="chemical-dot"/><span><strong>{recipe.name}</strong><small>{recipe.group} · {recipe.baseVolume} {recipe.baseUnit}</small></span>{canManage(recipe) && <FilePenLine size={14} className="chemical-list-edit" onClick={event => { event.stopPropagation(); openEdit(recipe); }}/>}</button>)}</aside>
       <section className="chemical-calculator"><div className="content-panel chemical-input-panel"><div className="panel-index">TARGET VOLUME</div><div className="chemical-heading"><div><h2>{selected.name}</h2><p>{selected.stock || "Chưa có thông tin stock"}{selected.note ? ` · ${selected.note}` : ""} <span className={`status-pill ${selected.status === "Đã duyệt" ? "approved" : "draft"}`}>{selected.status ?? "Đã duyệt"}</span></p></div><FlaskConical size={28}/></div><div className="result-toggle chemical-calculation-toggle"><span>Cách tính</span><button type="button" className={calculationMode === "total" ? "active" : ""} onClick={() => setCalculationMode("total")}>Theo tổng thể tích cần</button><button type="button" className={calculationMode === "remaining" ? "active" : ""} onClick={() => setCalculationMode("remaining")}>Theo nguyên liệu còn lại</button></div>{calculationMode === "total" ? <div className="chemical-input-row"><label className="field-label">Tổng thể tích cần<Input value={totalVolume} onChange={event => setTotalVolume(event.target.value)} inputMode="decimal"/><small>Công thức gốc: {selected.baseVolume} {selected.baseUnit}</small></label><div className="choice-field chemical-unit-choice"><span>Đơn vị</span><div className="choice-options" role="group" aria-label="Đơn vị tổng thể tích"><button type="button" className={totalUnit === "L" ? "active" : ""} aria-pressed={totalUnit === "L"} onClick={() => setTotalUnit("L")}>L</button><button type="button" className={totalUnit === "mL" ? "active" : ""} aria-pressed={totalUnit === "mL"} onClick={() => setTotalUnit("mL")}>mL</button><button type="button" className={totalUnit === "µL" ? "active" : ""} aria-pressed={totalUnit === "µL"} onClick={() => setTotalUnit("µL")}>µL</button></div></div></div> : <div className="chemical-input-row chemical-reverse-input-row"><label className="field-label">Nguyên liệu còn lại<select value={remainingIngredient ? String(remainingIngredientIndex) : ""} onChange={event => setRemainingIngredientIndex(Number(event.target.value))}>{calculableIngredients.map((ingredient, index) => <option key={`${ingredient.name}-${index}`} value={index}>{ingredient.name} · {ingredient.quantity} {ingredient.unit ?? ""}</option>)}</select><small>Chọn chất có thể tích/khối lượng nhỏ nhất còn lại.</small></label><label className="field-label">Lượng còn lại<Input value={remainingAmount} onChange={event => setRemainingAmount(event.target.value)} inputMode="decimal" placeholder={remainingIngredient?.unit ? `Nhập ${remainingIngredient.unit}` : "Nhập số liệu"}/><small>Đơn vị phải trùng với nguyên liệu đã chọn: {remainingIngredient?.unit ?? "theo công thức"}.</small></label></div>}{calculationMode === "remaining" && reverseTotal !== null && <div className="chemical-reverse-summary"><strong>Tổng thể tích cần pha: {format(reverseTotal)} mL</strong><span>Đã suy ra theo lượng còn lại của {remainingIngredient?.name}.</span></div>}{scale === null && <div className="chemical-warning"><Info size={15}/> Nhập tổng thể tích dương để tính.</div>}</div><div className="content-panel chemical-result-panel"><div className="panel-heading"><div><span className="panel-index">RESULT / SCALED AMOUNTS</span><h2>Lượng cần cân / đong</h2></div>{scale !== null && <span className="chemical-scale">× {format(scale)}</span>}</div><div className="chemical-table-wrap"><table className="chemical-table"><thead><tr><th>Hoá chất</th><th>Loại</th><th>Lượng cần</th><th>Stock gốc</th><th>Ghi chú</th></tr></thead><tbody>{selected.ingredients.map((ingredient, index) => { const quantity = scale !== null && ingredient.quantity !== undefined ? ingredient.quantity * scale : null; const displayed = quantity === null ? "Theo method" : `${format(quantity)} ${ingredient.unit ?? ""}`; const stock = ingredient.stockValue !== undefined ? `${format(ingredient.stockValue)} ${ingredient.stockUnit ?? ""}` : "—"; return <tr key={`${ingredient.name}-${index}`}><td><strong>{ingredient.name}</strong></td><td>{ingredient.form}</td><td className="chemical-amount">{displayed}</td><td>{stock}</td><td>{ingredient.note ?? (ingredient.finalTopUp ? "Bổ sung đến đủ thể tích" : "")}</td></tr>; })}</tbody></table></div><div className="chemical-method"><div className="panel-index">METHOD / NOTES</div><ol>{selected.steps.map((step, index) => <li key={`${step}-${index}`}>{step}</li>)}</ol></div></div></section>
