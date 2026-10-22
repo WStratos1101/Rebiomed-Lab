@@ -32,6 +32,9 @@
 .hypoxia-time { margin-top: 16px; padding: 15px; border-left: 3px solid var(--teal); background: var(--white); }
 .hypoxia-time strong { color: var(--teal); font-size: 26px; }
 .hypoxia-time strong span { color: var(--muted); font-size: 14px; font-weight: 500; }
+.hypoxia-target-field { margin-top: 8px; max-width: 360px; }
+.hypoxia-alert { display: grid; gap: 5px; margin-top: 16px; padding: 13px 15px; border-left: 3px solid var(--amber); border-radius: 6px; background: #fff7e9; color: #674b2b; font-size: 11px; line-height: 1.55; }
+.hypoxia-alert strong { color: #5c3219; font-size: 12px; }
 .hypoxia-warning { padding: 17px 19px; border: 1px solid #d8a15d; border-left: 4px solid var(--amber); border-radius: 7px; background: #fff7e9; color: #674b2b; font-size: 12px; line-height: 1.65; }
 .hypoxia-warning strong { display: block; margin-bottom: 5px; color: #5c3219; font-size: 13px; }
 .hypoxia-sources { color: #738078; font-size: 10px; line-height: 1.7; }
