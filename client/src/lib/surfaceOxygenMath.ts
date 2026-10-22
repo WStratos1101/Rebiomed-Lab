@@ -41,31 +41,36 @@ export type SurfaceOxygenEstimate = {
   diffusionDropUm: number;
   surfaceOxygenUm: number;
   surfaceOxygenMgPerL: number;
-  /** Equivalent gas-phase O2 percentage at the cell surface. */
   surfaceOxygenPercent: number;
-  /** Percentage of the starting gas-phase O2 equivalent remaining at the surface. */
   remainingFraction: number;
   consumptionPmolPerMin: number;
   diffusionCapacityPmolPerMin: number;
   diffusionLimited: boolean;
-  /** Null means the model predicts diffusion can keep up with consumption. */
   hypoxiaOnsetHours: number | null;
   status: "adequate" | "low" | "depleted";
 };
 
 export type SurfaceOxygenTarget = {
   targetSurfaceOxygenPercent: number;
+  targetSurfaceOxygenUm: number;
   requiredInputOxygenPercent: number;
   requiredInputOxygenPercentCapped: number;
   targetReachableWithAirInput: boolean;
   timeToTargetHours: number | null;
 };
 
+export type SurfaceOxygenMaintenance = {
+  maintenanceHours: number;
+  consumedOxygenUm: number;
+  consumedOxygenMgPerL: number;
+  consumedOxygenUmol: number;
+  equivalentInputOxygenPercent: number;
+};
+
 const OXYGEN_MOLAR_MASS_MG_PER_MMOL = 32;
 const BASE_SOLUBILITY_MMOL_PER_L_AT_37C_1ATM_AIR = 0.105;
 const AIR_OXYGEN_FRACTION = 0.2095;
 const OXYGEN_DIFFUSION_CM2_PER_S = 3e-5;
-
 const positive = (value: number) => Number.isFinite(value) && value > 0;
 
 function getPhysicalTerms(input: SurfaceOxygenInputs) {
@@ -82,16 +87,12 @@ function getPhysicalTerms(input: SurfaceOxygenInputs) {
   const diffusionDropUm = (fluxMolPerCm2PerS * heightCm / OXYGEN_DIFFUSION_CM2_PER_S) * 1e9;
   const initialUm = dissolvedUmPerInputPercent * input.oxygenPercent;
   const initialConcentrationMolPerCm3 = initialUm * 1e-9;
-  const diffusionCapacityPmolPerMin = (
-    OXYGEN_DIFFUSION_CM2_PER_S * initialConcentrationMolPerCm3 / heightCm
-    * input.areaCm2 * 1e12 * 60
-  );
+  const diffusionCapacityPmolPerMin = OXYGEN_DIFFUSION_CM2_PER_S * initialConcentrationMolPerCm3 / heightCm * input.areaCm2 * 1e12 * 60;
   return { volumeL, heightCm, dissolvedUmPerInputPercent, consumptionPmolPerMin, consumptionUmPerHour, diffusionDropUm, initialUm, diffusionCapacityPmolPerMin };
 }
 
 function validInput(input: SurfaceOxygenInputs) {
-  return [input.areaCm2, input.volumeMl, input.cellCount, input.ocrPmolPerMinPer100k, input.timeHours, input.temperatureC + 273.15, input.pressureAtm, input.oxygenPercent, input.mediumSolubilityFactor].every(positive)
-    && input.oxygenPercent <= 100;
+  return [input.areaCm2, input.volumeMl, input.cellCount, input.ocrPmolPerMinPer100k, input.timeHours, input.temperatureC + 273.15, input.pressureAtm, input.oxygenPercent, input.mediumSolubilityFactor].every(positive) && input.oxygenPercent <= 100;
 }
 
 export function estimateSurfaceOxygen(input: SurfaceOxygenInputs): SurfaceOxygenEstimate | null {
@@ -105,51 +106,37 @@ export function estimateSurfaceOxygen(input: SurfaceOxygenInputs): SurfaceOxygen
   const surfaceOxygenPercent = input.oxygenPercent * remainingFraction;
   const diffusionLimited = terms.consumptionPmolPerMin > terms.diffusionCapacityPmolPerMin;
   const netConsumptionPmolPerMin = terms.consumptionPmolPerMin - terms.diffusionCapacityPmolPerMin;
-  const hypoxiaOnsetHours = diffusionLimited
-    ? Math.max(0, terms.initialUm * terms.volumeL * 1_000_000 / (netConsumptionPmolPerMin * 60))
-    : null;
+  const hypoxiaOnsetHours = diffusionLimited ? Math.max(0, terms.initialUm * terms.volumeL * 1_000_000 / (netConsumptionPmolPerMin * 60)) : null;
   const status = surfaceOxygenUm <= 0 ? "depleted" : surfaceOxygenUm < 20 ? "low" : "adequate";
-
-  return {
-    liquidHeightMm: terms.heightCm * 10,
-    initialDissolvedOxygenMgPerL: initialMgPerL,
-    initialDissolvedOxygenUm: terms.initialUm,
-    consumedOxygenUm: consumedUm,
-    diffusionDropUm: terms.diffusionDropUm,
-    surfaceOxygenUm,
-    surfaceOxygenMgPerL: surfaceMgPerL,
-    surfaceOxygenPercent,
-    remainingFraction,
-    consumptionPmolPerMin: terms.consumptionPmolPerMin,
-    diffusionCapacityPmolPerMin: terms.diffusionCapacityPmolPerMin,
-    diffusionLimited,
-    hypoxiaOnsetHours,
-    status,
-  };
+  return { liquidHeightMm: terms.heightCm * 10, initialDissolvedOxygenMgPerL: initialMgPerL, initialDissolvedOxygenUm: terms.initialUm, consumedOxygenUm: consumedUm, diffusionDropUm: terms.diffusionDropUm, surfaceOxygenUm, surfaceOxygenMgPerL: surfaceMgPerL, surfaceOxygenPercent, remainingFraction, consumptionPmolPerMin: terms.consumptionPmolPerMin, diffusionCapacityPmolPerMin: terms.diffusionCapacityPmolPerMin, diffusionLimited, hypoxiaOnsetHours, status };
 }
 
-/**
- * Calculates the starting gas-phase oxygen percentage needed to reach a target
- * equivalent percentage at the cell surface after the selected culture time.
- * This is a screening inverse model, not a gas-transfer control algorithm.
- */
+function estimateTargetByUm(input: SurfaceOxygenInputs, targetSurfaceOxygenUm: number): SurfaceOxygenTarget | null {
+  if (!validInput(input) || !positive(targetSurfaceOxygenUm)) return null;
+  const terms = getPhysicalTerms(input);
+  const targetSurfaceOxygenPercent = targetSurfaceOxygenUm / terms.dissolvedUmPerInputPercent;
+  const consumedUm = terms.consumptionUmPerHour * input.timeHours;
+  const requiredInputOxygenPercent = (targetSurfaceOxygenUm + consumedUm + terms.diffusionDropUm / 2) / terms.dissolvedUmPerInputPercent;
+  const currentSurfaceReserveUm = terms.initialUm - terms.diffusionDropUm / 2;
+  const timeToTargetHours = currentSurfaceReserveUm > targetSurfaceOxygenUm && terms.consumptionUmPerHour > 0 ? (currentSurfaceReserveUm - targetSurfaceOxygenUm) / terms.consumptionUmPerHour : null;
+  return { targetSurfaceOxygenPercent, targetSurfaceOxygenUm, requiredInputOxygenPercent, requiredInputOxygenPercentCapped: Math.min(100, Math.max(0, requiredInputOxygenPercent)), targetReachableWithAirInput: requiredInputOxygenPercent <= 100, timeToTargetHours };
+}
+
 export function estimateRequiredInputOxygen(input: SurfaceOxygenInputs, targetSurfaceOxygenPercent: number): SurfaceOxygenTarget | null {
   if (!validInput(input) || !positive(targetSurfaceOxygenPercent) || targetSurfaceOxygenPercent > 100) return null;
   const terms = getPhysicalTerms(input);
-  const targetUm = terms.dissolvedUmPerInputPercent * targetSurfaceOxygenPercent;
-  const consumedUm = terms.consumptionUmPerHour * input.timeHours;
-  const requiredInputOxygenPercent = (targetUm + consumedUm + terms.diffusionDropUm / 2) / terms.dissolvedUmPerInputPercent;
-  const currentSurfaceReserveUm = terms.initialUm - terms.diffusionDropUm / 2;
-  const timeToTargetHours = currentSurfaceReserveUm > targetUm && terms.consumptionUmPerHour > 0
-    ? (currentSurfaceReserveUm - targetUm) / terms.consumptionUmPerHour
-    : null;
-  return {
-    targetSurfaceOxygenPercent,
-    requiredInputOxygenPercent,
-    requiredInputOxygenPercentCapped: Math.min(100, Math.max(0, requiredInputOxygenPercent)),
-    targetReachableWithAirInput: requiredInputOxygenPercent <= 100,
-    timeToTargetHours,
-  };
+  return estimateTargetByUm(input, terms.dissolvedUmPerInputPercent * targetSurfaceOxygenPercent);
+}
+
+export function estimateRequiredInputOxygenByConcentration(input: SurfaceOxygenInputs, targetSurfaceOxygenUm: number): SurfaceOxygenTarget | null {
+  return estimateTargetByUm(input, targetSurfaceOxygenUm);
+}
+
+export function calculateMaintenanceOxygen(input: SurfaceOxygenInputs, maintenanceHours: number): SurfaceOxygenMaintenance | null {
+  if (!validInput(input) || !positive(maintenanceHours)) return null;
+  const terms = getPhysicalTerms(input);
+  const consumedOxygenUm = terms.consumptionUmPerHour * maintenanceHours;
+  return { maintenanceHours, consumedOxygenUm, consumedOxygenMgPerL: (consumedOxygenUm / 1000) * OXYGEN_MOLAR_MASS_MG_PER_MMOL, consumedOxygenUmol: consumedOxygenUm * terms.volumeL, equivalentInputOxygenPercent: consumedOxygenUm / terms.dissolvedUmPerInputPercent };
 }
 
 export function formatScientific(value: number) {

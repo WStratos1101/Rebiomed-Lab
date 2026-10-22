@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateRequiredInputOxygen, estimateSurfaceOxygen } from "../client/src/lib/surfaceOxygenMath";
+import { calculateMaintenanceOxygen, estimateRequiredInputOxygen, estimateRequiredInputOxygenByConcentration, estimateSurfaceOxygen } from "../client/src/lib/surfaceOxygenMath";
 
 const baseInput = {
   areaCm2: 0.32,
@@ -38,16 +38,28 @@ describe("surface oxygen estimate", () => {
     expect(result!.status).toBe("depleted");
   });
 
-  it("calculates required starting oxygen for a target surface percentage", () => {
-    const result = estimateRequiredInputOxygen({ ...baseInput, timeHours: 24 }, 5);
+  it("calculates required starting oxygen for a target surface percentage or concentration", () => {
+    const percentResult = estimateRequiredInputOxygen({ ...baseInput, timeHours: 24 }, 5);
+    const concentrationResult = estimateRequiredInputOxygenByConcentration({ ...baseInput, timeHours: 24 }, 5);
+    expect(percentResult).not.toBeNull();
+    expect(concentrationResult).not.toBeNull();
+    expect(percentResult!.requiredInputOxygenPercent).toBeGreaterThan(5);
+    expect(concentrationResult!.targetSurfaceOxygenUm).toBe(5);
+  });
+
+  it("calculates oxygen equivalent needed for a maintenance interval", () => {
+    const result = calculateMaintenanceOxygen(baseInput, 24);
     expect(result).not.toBeNull();
-    expect(result!.requiredInputOxygenPercent).toBeGreaterThan(5);
-    expect(result!.requiredInputOxygenPercentCapped).toBeLessThanOrEqual(100);
+    expect(result!.consumedOxygenUm).toBeGreaterThan(0);
+    expect(result!.consumedOxygenUmol).toBeGreaterThan(0);
+    expect(result!.equivalentInputOxygenPercent).toBeGreaterThan(0);
   });
 
   it("rejects invalid inputs and impossible targets", () => {
     expect(estimateSurfaceOxygen({ ...baseInput, areaCm2: 0 })).toBeNull();
     expect(estimateRequiredInputOxygen(baseInput, 0)).toBeNull();
     expect(estimateRequiredInputOxygen(baseInput, 101)).toBeNull();
+    expect(estimateRequiredInputOxygenByConcentration(baseInput, 0)).toBeNull();
+    expect(calculateMaintenanceOxygen(baseInput, 0)).toBeNull();
   });
 });
