@@ -41,6 +41,11 @@ export type SurfaceOxygenInputs = {
 
 export type SurfaceOxygenEstimate = {
   liquidHeightMm: number;
+  inputGasOxygenUmol: number;
+  initialDissolvedOxygenUmol: number;
+  totalInitialOxygenUmol: number;
+  consumedOxygenUmol: number;
+  remainingTotalOxygenUmol: number;
   initialDissolvedOxygenMgPerL: number;
   initialDissolvedOxygenUm: number;
   consumedOxygenUm: number;
@@ -95,14 +100,15 @@ function getPhysicalTerms(input: SurfaceOxygenInputs) {
   const initialEquilibriumUm = dissolvedUmPerOxygenPercent * input.gasOxygenPercent;
   const gasMolarDensityUmolPerMl = input.pressureAtm * 1000 / (GAS_CONSTANT_L_ATM_PER_MOL_K * kelvin);
   const gasOxygenUmol = input.gasVolumeLiters * 1000 * gasMolarDensityUmolPerMl * (input.gasOxygenPercent / 100);
-  const gasReservoirUm = gasOxygenUmol / volumeL;
-  const initialUm = Math.min(initialEquilibriumUm, gasReservoirUm);
+  const dissolvedOxygenUmol = initialEquilibriumUm * volumeL;
+  const totalInitialOxygenUmol = gasOxygenUmol + dissolvedOxygenUmol;
   const consumptionPmolPerMin = input.ocrPmolPerMinPer100k * (input.cellCount / 100000);
-  const consumptionUmPerHour = (consumptionPmolPerMin * 60) / (volumeL * 1_000_000);
+  const consumptionUmolPerHour = (consumptionPmolPerMin * 60) / 1_000_000;
+  const consumptionUmPerHour = consumptionUmolPerHour / volumeL;
   const fluxMolPerCm2PerS = (consumptionPmolPerMin * 1e-12 / 60) / input.areaCm2;
   const diffusionDropUm = (fluxMolPerCm2PerS * heightCm / OXYGEN_DIFFUSION_CM2_PER_S) * 1e9;
-  const diffusionCapacityPmolPerMin = OXYGEN_DIFFUSION_CM2_PER_S * (initialUm * 1e-9) / heightCm * input.areaCm2 * 1e12 * 60;
-  return { volumeL, heightCm, dissolvedUmPerOxygenPercent, initialEquilibriumUm, gasMolarDensityUmolPerMl, gasOxygenUmol, gasReservoirUm, initialUm, consumptionPmolPerMin, consumptionUmPerHour, diffusionDropUm, diffusionCapacityPmolPerMin };
+  const diffusionCapacityPmolPerMin = OXYGEN_DIFFUSION_CM2_PER_S * (initialEquilibriumUm * 1e-9) / heightCm * input.areaCm2 * 1e12 * 60;
+  return { volumeL, heightCm, dissolvedUmPerOxygenPercent, initialEquilibriumUm, gasMolarDensityUmolPerMl, gasOxygenUmol, dissolvedOxygenUmol, totalInitialOxygenUmol, consumptionPmolPerMin, consumptionUmolPerHour, consumptionUmPerHour, diffusionDropUm, diffusionCapacityPmolPerMin };
 }
 
 function validInput(input: SurfaceOxygenInputs) {
@@ -113,41 +119,43 @@ function validInput(input: SurfaceOxygenInputs) {
 export function estimateSurfaceOxygen(input: SurfaceOxygenInputs): SurfaceOxygenEstimate | null {
   if (!validInput(input)) return null;
   const terms = getPhysicalTerms(input);
-  const consumedUm = terms.consumptionUmPerHour * input.timeHours;
-  const remainingGasOxygenUmol = Math.max(0, terms.gasOxygenUmol - (consumedUm * terms.volumeL));
-  const remainingGasOxygenPercent = terms.gasOxygenUmol > 0 ? input.gasOxygenPercent * remainingGasOxygenUmol / terms.gasOxygenUmol : 0;
-  const equilibriumAtTimeUm = terms.dissolvedUmPerOxygenPercent * remainingGasOxygenPercent;
-  const remainingGasOxygenUm = remainingGasOxygenUmol / terms.volumeL;
-  const surfaceOxygenUm = Math.max(0, Math.min(equilibriumAtTimeUm, remainingGasOxygenUm) - terms.diffusionDropUm / 2);
-  const initialMgPerL = (terms.initialUm / 1000) * OXYGEN_MOLAR_MASS_MG_PER_MMOL;
+  const consumedOxygenUmol = terms.consumptionUmolPerHour * input.timeHours;
+  const remainingTotalOxygenUmol = Math.max(0, terms.totalInitialOxygenUmol - consumedOxygenUmol);
+  const remainingFraction = terms.totalInitialOxygenUmol > 0 ? remainingTotalOxygenUmol / terms.totalInitialOxygenUmol : 0;
+  const remainingGasOxygenPercent = input.gasOxygenPercent * remainingFraction;
+  const equilibriumAtTimeUm = terms.initialEquilibriumUm * remainingFraction;
+  const surfaceOxygenUm = Math.max(0, equilibriumAtTimeUm - terms.diffusionDropUm / 2);
+  const initialMgPerL = (terms.initialEquilibriumUm / 1000) * OXYGEN_MOLAR_MASS_MG_PER_MMOL;
   const surfaceMgPerL = (surfaceOxygenUm / 1000) * OXYGEN_MOLAR_MASS_MG_PER_MMOL;
-  const remainingFraction = terms.initialUm > 0 ? surfaceOxygenUm / terms.initialUm : 0;
   const surfaceOxygenPercent = terms.dissolvedUmPerOxygenPercent > 0 ? surfaceOxygenUm / terms.dissolvedUmPerOxygenPercent : 0;
   const diffusionLimited = terms.consumptionPmolPerMin > terms.diffusionCapacityPmolPerMin;
   const netConsumptionPmolPerMin = terms.consumptionPmolPerMin - terms.diffusionCapacityPmolPerMin;
-  const hypoxiaOnsetHours = diffusionLimited ? Math.max(0, terms.initialUm * terms.volumeL * 1_000_000 / (netConsumptionPmolPerMin * 60)) : null;
+  const hypoxiaOnsetHours = diffusionLimited ? Math.max(0, terms.totalInitialOxygenUmol * 1_000_000 / (netConsumptionPmolPerMin * 60)) : null;
   const status = surfaceOxygenUm <= 0 ? "depleted" : surfaceOxygenPercent < 5 ? "low" : "adequate";
-  return { liquidHeightMm: terms.heightCm * 10, initialDissolvedOxygenMgPerL: initialMgPerL, initialDissolvedOxygenUm: terms.initialUm, consumedOxygenUm: consumedUm, diffusionDropUm: terms.diffusionDropUm, surfaceOxygenUm, surfaceOxygenMgPerL: surfaceMgPerL, surfaceOxygenPercent, remainingFraction, remainingGasOxygenPercent, consumptionPmolPerMin: terms.consumptionPmolPerMin, diffusionCapacityPmolPerMin: terms.diffusionCapacityPmolPerMin, diffusionLimited, hypoxiaOnsetHours, status };
+  return { liquidHeightMm: terms.heightCm * 10, inputGasOxygenUmol: terms.gasOxygenUmol, initialDissolvedOxygenUmol: terms.dissolvedOxygenUmol, totalInitialOxygenUmol: terms.totalInitialOxygenUmol, consumedOxygenUmol, remainingTotalOxygenUmol, initialDissolvedOxygenMgPerL: initialMgPerL, initialDissolvedOxygenUm: terms.initialEquilibriumUm, consumedOxygenUm: terms.consumptionUmPerHour * input.timeHours, diffusionDropUm: terms.diffusionDropUm, surfaceOxygenUm, surfaceOxygenMgPerL: surfaceMgPerL, surfaceOxygenPercent, remainingFraction, remainingGasOxygenPercent, consumptionPmolPerMin: terms.consumptionPmolPerMin, diffusionCapacityPmolPerMin: terms.diffusionCapacityPmolPerMin, diffusionLimited, hypoxiaOnsetHours, status };
 }
 
 function estimateTargetByUm(input: SurfaceOxygenInputs, targetSurfaceOxygenUm: number): SurfaceOxygenTarget | null {
   if (!validInput(input) || !positive(targetSurfaceOxygenUm)) return null;
   const terms = getPhysicalTerms(input);
   const targetSurfaceOxygenPercent = targetSurfaceOxygenUm / terms.dissolvedUmPerOxygenPercent;
-  const consumedUm = terms.consumptionUmPerHour * input.timeHours;
-  const requiredInitialUm = targetSurfaceOxygenUm + consumedUm + terms.diffusionDropUm / 2;
+  const requiredInitialUm = targetSurfaceOxygenUm + terms.diffusionDropUm / 2;
   const requiredGasVolumeLiters = volumeForGas(input, terms, requiredInitialUm);
   const requiredInputOxygenVolumeMl = requiredGasVolumeLiters * (input.gasOxygenPercent / 100);
-  const currentSurfaceReserveUm = terms.initialUm - terms.diffusionDropUm / 2;
-  const timeToTargetHours = currentSurfaceReserveUm > targetSurfaceOxygenUm && terms.consumptionUmPerHour > 0 ? (currentSurfaceReserveUm - targetSurfaceOxygenUm) / terms.consumptionUmPerHour : null;
+  const currentSurfaceReserveUm = terms.initialEquilibriumUm - terms.diffusionDropUm / 2;
+  const targetFractionOfTotal = requiredInitialUm / Math.max(terms.initialEquilibriumUm, Number.EPSILON);
+  const timeToTargetHours = currentSurfaceReserveUm > targetSurfaceOxygenUm && terms.consumptionUmolPerHour > 0 ? (terms.totalInitialOxygenUmol * (1 - targetFractionOfTotal)) / terms.consumptionUmolPerHour : null;
   return { targetSurfaceOxygenPercent, targetSurfaceOxygenUm, requiredGasVolumeLiters, requiredInputOxygenVolumeMl, requiredInputOxygenVolumeMlCapped: Math.max(0, requiredInputOxygenVolumeMl), targetReachableWithInput: input.gasVolumeLiters >= requiredGasVolumeLiters, timeToTargetHours };
 }
 
 function volumeForGas(input: SurfaceOxygenInputs, terms: ReturnType<typeof getPhysicalTerms>, requiredInitialUm: number) {
-  const requiredGasOxygenUmol = requiredInitialUm * terms.volumeL;
   const gasOxygenFraction = input.gasOxygenPercent / 100;
+  const targetFraction = requiredInitialUm / terms.dissolvedUmPerOxygenPercent / 100;
   const gasMolarDensityUmolPerL = terms.gasMolarDensityUmolPerMl * 1000;
-  return requiredGasOxygenUmol / Math.max(gasOxygenFraction * gasMolarDensityUmolPerL, Number.EPSILON);
+  const consumedOxygenUmol = terms.consumptionUmolPerHour * input.timeHours;
+  const numerator = (requiredInitialUm - terms.initialEquilibriumUm) * terms.volumeL + consumedOxygenUmol;
+  const denominator = gasMolarDensityUmolPerL * (gasOxygenFraction - targetFraction);
+  return denominator > 0 ? Math.max(0, numerator / denominator) : Number.POSITIVE_INFINITY;
 }
 
 export function estimateRequiredInputOxygen(input: SurfaceOxygenInputs, targetSurfaceOxygenPercent: number): SurfaceOxygenTarget | null {
@@ -179,7 +187,7 @@ export function buildOxygenTimeline(input: SurfaceOxygenInputs, target: SurfaceO
   const targetHour = Math.max(0, Math.min(durationHours, input.timeHours));
   const maintenanceInterval = terms.consumptionUmPerHour > 0 ? Math.max(0.25, target.targetSurfaceOxygenUm / terms.consumptionUmPerHour) : durationHours;
   const points: SurfaceOxygenTimelinePoint[] = [
-    { hour: 0, oxygenUm: Math.min(terms.dissolvedUmPerOxygenPercent * input.gasOxygenPercent, target.targetSurfaceOxygenUm + terms.consumptionUmPerHour * Math.max(0, durationHours - targetHour) + terms.diffusionDropUm / 2), label: "Nạp khí ban đầu" },
+    { hour: 0, oxygenUm: Math.max(0, terms.initialEquilibriumUm - terms.diffusionDropUm / 2), label: "Nạp khí ban đầu" },
     { hour: targetHour, oxygenUm: target.targetSurfaceOxygenUm, label: "Đạt mục tiêu / bắt đầu duy trì" },
   ];
   for (let hour = targetHour + maintenanceInterval; hour < durationHours; hour += maintenanceInterval) points.push({ hour, oxygenUm: target.targetSurfaceOxygenUm, label: "Bổ sung khí duy trì" });

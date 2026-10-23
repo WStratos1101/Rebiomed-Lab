@@ -23,6 +23,25 @@ describe("surface oxygen estimate", () => {
     expect(result!.surfaceOxygenPercent).toBeGreaterThanOrEqual(0);
   });
 
+  it("uses total gas volume to calculate actual oxygen inventory", () => {
+    const smallSystem = estimateSurfaceOxygen({ ...baseInput, gasVolumeLiters: 0.001, timeHours: 24 });
+    const largeSystem = estimateSurfaceOxygen({ ...baseInput, gasVolumeLiters: 1, timeHours: 24 });
+    expect(smallSystem).not.toBeNull();
+    expect(largeSystem).not.toBeNull();
+    expect(largeSystem!.inputGasOxygenUmol).toBeGreaterThan(smallSystem!.inputGasOxygenUmol * 900);
+    expect(largeSystem!.totalInitialOxygenUmol).toBeGreaterThan(smallSystem!.totalInitialOxygenUmol * 900);
+  });
+
+  it("uses incubation time to subtract oxygen consumed from the system", () => {
+    const shortIncubation = estimateSurfaceOxygen({ ...baseInput, gasVolumeLiters: 0.001, timeHours: 0.1 });
+    const longIncubation = estimateSurfaceOxygen({ ...baseInput, gasVolumeLiters: 0.001, timeHours: 24 });
+    expect(shortIncubation).not.toBeNull();
+    expect(longIncubation).not.toBeNull();
+    expect(longIncubation!.consumedOxygenUmol).toBeGreaterThan(shortIncubation!.consumedOxygenUmol);
+    expect(longIncubation!.remainingTotalOxygenUmol).toBeLessThan(shortIncubation!.remainingTotalOxygenUmol);
+    expect(longIncubation!.surfaceOxygenUm).toBeLessThan(shortIncubation!.surfaceOxygenUm);
+  });
+
   it("reports diffusion limitation and a finite onset time for high OCR", () => {
     const result = estimateSurfaceOxygen({ ...baseInput, cellCount: 1000000, ocrPmolPerMinPer100k: 305.9, timeHours: 24 });
     expect(result).not.toBeNull();
