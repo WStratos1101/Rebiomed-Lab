@@ -7,6 +7,7 @@ import { seedChemicalRecipes, type ChemicalRecipe } from "@shared/chemicalRecipe
 import { calculateCellsNeeded, calculateManualCellCount, calculateVolumeToTake } from "@/lib/cellCalculations";
 import { calculateDilution, CONCENTRATION_UNITS, VOLUME_UNITS, type ConcentrationUnit, type DilutionTarget, type VolumeUnit, volumeToMl } from "@/lib/dilutionMath";
 import { parseLocaleNumber } from "@/lib/numberInput";
+import syncLogo from "@/assets/rebiomed-sync-logo.png";
 import { toast } from "sonner";
 import {
   Archive,
@@ -515,7 +516,7 @@ export default function Home() {
           })}
         </nav>
         <div className="sidebar-rule" />
-        <div className="sidebar-bottom"><div className="sync-note"><span className="sync-icon sync-logo"><img src="/rebiomed-sync-logo.png" alt="Rebiomed logo" /></span><span><strong>Đã đồng bộ</strong><small>{contentQuery.isFetching ? "Đang cập nhật…" : "Chỉnh sửa trực tiếp"}</small><small className="sync-presenter">Presented by W.Stratos with Luv :3</small><a className="github-project-link" href="https://github.com/WStratos1101/Rebiomed-Lab" target="_blank" rel="noreferrer" aria-label="Mở repository Rebiomed-Lab trên GitHub"><Github size={14} /></a></span></div></div>
+        <div className="sidebar-bottom"><div className="sync-note"><span className="sync-icon sync-logo"><img src={syncLogo} alt="Rebiomed logo" /></span><span><strong>Đã đồng bộ</strong><small>{contentQuery.isFetching ? "Đang cập nhật…" : "Chỉnh sửa trực tiếp"}</small><small className="sync-presenter">Presented by W.Stratos with Luv :3</small><a className="github-project-link" href="https://github.com/WStratos1101/Rebiomed-Lab" target="_blank" rel="noreferrer" aria-label="Mở repository Rebiomed-Lab trên GitHub"><Github size={14} /></a></span></div></div>
       </aside>
       {mobileNav && <button className="mobile-overlay" onClick={() => setMobileNav(false)} aria-label="Đóng menu" />}
 

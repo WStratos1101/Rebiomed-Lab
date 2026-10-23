@@ -172,7 +172,11 @@ export function calculateMaintenanceOxygen(input: SurfaceOxygenInputs, maintenan
 export function buildOxygenTimeline(input: SurfaceOxygenInputs, target: SurfaceOxygenTarget | null, durationHours: number): SurfaceOxygenTimelinePoint[] {
   if (!target || !positive(durationHours)) return [];
   const terms = getPhysicalTerms(input);
-  const targetHour = target.timeToTargetHours === null ? 0 : Math.max(0, Math.min(durationHours, target.timeToTargetHours));
+  // The target tool accepts a planned time to reach the target. The chart can
+  // continue beyond that point to show the maintenance phase, so use the
+  // planned duration for the first phase rather than the instantaneous model
+  // estimate stored in target.timeToTargetHours.
+  const targetHour = Math.max(0, Math.min(durationHours, input.timeHours));
   const maintenanceInterval = terms.consumptionUmPerHour > 0 ? Math.max(0.25, target.targetSurfaceOxygenUm / terms.consumptionUmPerHour) : durationHours;
   const points: SurfaceOxygenTimelinePoint[] = [
     { hour: 0, oxygenUm: Math.min(terms.dissolvedUmPerOxygenPercent * input.gasOxygenPercent, target.targetSurfaceOxygenUm + terms.consumptionUmPerHour * Math.max(0, durationHours - targetHour) + terms.diffusionDropUm / 2), label: "Nạp khí ban đầu" },

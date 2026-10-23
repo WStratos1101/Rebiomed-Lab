@@ -89,8 +89,11 @@ export function SurfaceOxygenCalculator() {
   const maintenance = useMemo(() => calculateMaintenanceOxygen(reverseInputs, parseLocaleNumber(maintenanceTime)), [reverseInputs, maintenanceTime]);
   const volumeUlNumber = parseLocaleNumber(volumeUl);
   const volumeWarning = Number.isFinite(volumeUlNumber) && (volumeUlNumber < vessel.minMl * 1000 || volumeUlNumber > vessel.maxMl * 1000);
-  const chartDuration = parseLocaleNumber(time);
-  const timeline = useMemo(() => buildOxygenTimeline(reverseInputs, reverseTarget, chartDuration), [reverseInputs, reverseTarget, chartDuration]);
+  const plannedDuration = parseLocaleNumber(time);
+  const maintenanceDuration = parseLocaleNumber(maintenanceTime);
+  const chartDuration = plannedDuration + (Number.isFinite(maintenanceDuration) && maintenanceDuration > 0 ? maintenanceDuration : 0);
+  const timelineInputs = useMemo(() => ({ ...reverseInputs, timeHours: plannedDuration }), [reverseInputs, plannedDuration]);
+  const timeline = useMemo(() => buildOxygenTimeline(timelineInputs, reverseTarget, chartDuration), [timelineInputs, reverseTarget, chartDuration]);
   const changeVessel = (id: string) => { setVesselId(id); const next = SURFACE_OXYGEN_VESSELS.find(item => item.id === id); if (next) setVolumeUl(String(next.defaultMl * 1000)); };
   const applyPreset = (id: string) => { setPreset(id); const next = SURFACE_OXYGEN_PRESETS.find(item => item.id === id); if (next) setOcr(String(next.ocrPmolPerMinPer100k)); };
   const maintenanceTargetLabel = targetUnit === "percent" ? `${format(targetValue, 2)}% O₂` : `${format(targetValue, 2)} µM O₂`;
