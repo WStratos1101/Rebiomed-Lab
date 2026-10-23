@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { calculateMaintenanceOxygen, estimateRequiredInputOxygen, estimateRequiredInputOxygenByConcentration, estimateSurfaceOxygen } from "../client/src/lib/surfaceOxygenMath";
+import { buildOxygenTimeline, calculateMaintenanceOxygen, estimateRequiredInputOxygen, estimateRequiredInputOxygenByConcentration, estimateSurfaceOxygen } from "../client/src/lib/surfaceOxygenMath";
 
 const baseInput = {
   areaCm2: 0.32,
   volumeMl: 0.1,
+  oxygenVolumeMl: 1,
   cellCount: 100000,
   ocrPmolPerMinPer100k: 63.1,
   timeHours: 1,
   temperatureC: 37,
   pressureAtm: 1,
-  oxygenPercent: 19,
   mediumSolubilityFactor: 0.9,
 };
 
@@ -20,7 +20,6 @@ describe("surface oxygen estimate", () => {
     expect(result!.liquidHeightMm).toBeCloseTo(3.125, 3);
     expect(result!.initialDissolvedOxygenMgPerL).toBeGreaterThan(2);
     expect(result!.surfaceOxygenPercent).toBeGreaterThanOrEqual(0);
-    expect(result!.surfaceOxygenPercent).toBeLessThanOrEqual(19);
   });
 
   it("reports diffusion limitation and a finite onset time for high OCR", () => {
@@ -38,12 +37,12 @@ describe("surface oxygen estimate", () => {
     expect(result!.status).toBe("depleted");
   });
 
-  it("calculates required starting oxygen for a target surface percentage or concentration", () => {
+  it("calculates required starting oxygen volume for a target surface", () => {
     const percentResult = estimateRequiredInputOxygen({ ...baseInput, timeHours: 24 }, 5);
     const concentrationResult = estimateRequiredInputOxygenByConcentration({ ...baseInput, timeHours: 24 }, 5);
     expect(percentResult).not.toBeNull();
     expect(concentrationResult).not.toBeNull();
-    expect(percentResult!.requiredInputOxygenPercent).toBeGreaterThan(5);
+    expect(percentResult!.requiredInputOxygenVolumeMl).toBeGreaterThan(0);
     expect(concentrationResult!.targetSurfaceOxygenUm).toBe(5);
   });
 
@@ -52,7 +51,14 @@ describe("surface oxygen estimate", () => {
     expect(result).not.toBeNull();
     expect(result!.consumedOxygenUm).toBeGreaterThan(0);
     expect(result!.consumedOxygenUmol).toBeGreaterThan(0);
-    expect(result!.equivalentInputOxygenPercent).toBeGreaterThan(0);
+    expect(result!.equivalentInputOxygenVolumeMl).toBeGreaterThan(0);
+  });
+
+  it("builds a timeline with target and maintenance events", () => {
+    const target = estimateRequiredInputOxygen({ ...baseInput, timeHours: 12 }, 5);
+    const timeline = buildOxygenTimeline({ ...baseInput, timeHours: 12 }, target, 24);
+    expect(timeline.length).toBeGreaterThan(2);
+    expect(timeline.some(point => point.label?.includes("bắt đầu duy trì"))).toBe(true);
   });
 
   it("rejects invalid inputs and impossible targets", () => {

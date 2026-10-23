@@ -32,12 +32,20 @@
 .hypoxia-time { margin-top: 16px; padding: 15px; border-left: 3px solid var(--teal); background: var(--white); }
 .hypoxia-time strong { color: var(--teal); font-size: 26px; }
 .hypoxia-time strong span { color: var(--muted); font-size: 14px; font-weight: 500; }
-.hypoxia-target-field { margin-top: 8px; max-width: 360px; }
 .hypoxia-alert { display: grid; gap: 5px; margin-top: 16px; padding: 13px 15px; border-left: 3px solid var(--amber); border-radius: 6px; background: #fff7e9; color: #674b2b; font-size: 11px; line-height: 1.55; }
 .hypoxia-alert strong { color: #5c3219; font-size: 12px; }
 .hypoxia-warning { padding: 17px 19px; border: 1px solid #d8a15d; border-left: 4px solid var(--amber); border-radius: 7px; background: #fff7e9; color: #674b2b; font-size: 12px; line-height: 1.65; }
 .hypoxia-warning strong { display: block; margin-bottom: 5px; color: #5c3219; font-size: 13px; }
 .hypoxia-sources { color: #738078; font-size: 10px; line-height: 1.7; }
 .hypoxia-sources a { color: var(--teal); text-underline-offset: 2px; }
+.hypoxia-chart-wrap { margin-top: 18px; padding: 14px; border: 1px solid #c8ddd4; border-radius: 8px; background: #f8fcfa; overflow: hidden; }
+.hypoxia-chart { display: block; width: 100%; min-width: 520px; height: auto; overflow: visible; }
+.hypoxia-chart-axis { stroke: #b9ccc4; stroke-width: 1; }
+.hypoxia-chart-line { fill: none; stroke: var(--teal); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.hypoxia-chart-dot { fill: var(--amber); stroke: var(--white); stroke-width: 2; }
+.hypoxia-chart-label, .hypoxia-chart-caption { fill: #64756d; font: 10px "Be Vietnam Pro"; }
+.hypoxia-chart-events { display: flex; flex-wrap: wrap; gap: 7px 14px; margin-top: 10px; color: #68776f; font-size: 10px; line-height: 1.5; }
+.hypoxia-chart-events span { padding: 5px 7px; border-radius: 5px; background: var(--white); }
+.hypoxia-chart-events b { color: var(--teal); }
 @media (max-width: 900px) { .hypoxia-grid { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .hypoxia-panel { padding: 18px; } .hypoxia-metrics { grid-template-columns: 1fr; } .hypoxia-row { align-items: flex-start; flex-wrap: wrap; } .hypoxia-time strong { font-size: 20px; } }
+@media (max-width: 600px) { .hypoxia-panel { padding: 18px; } .hypoxia-metrics { grid-template-columns: 1fr; } .hypoxia-row { align-items: flex-start; flex-wrap: wrap; } .hypoxia-time strong { font-size: 20px; } .hypoxia-chart-wrap { overflow-x: auto; } .hypoxia-chart { min-width: 500px; } .hypoxia-chart-events { min-width: 500px; } }
