@@ -4,7 +4,8 @@ import { buildOxygenTimeline, calculateMaintenanceOxygen, estimateRequiredInputO
 const baseInput = {
   areaCm2: 0.32,
   volumeMl: 0.1,
-  oxygenVolumeMl: 1,
+  gasVolumeLiters: 1,
+  gasOxygenPercent: 19,
   cellCount: 100000,
   ocrPmolPerMinPer100k: 63.1,
   timeHours: 1,
@@ -42,7 +43,7 @@ describe("surface oxygen estimate", () => {
     const concentrationResult = estimateRequiredInputOxygenByConcentration({ ...baseInput, timeHours: 24 }, 5);
     expect(percentResult).not.toBeNull();
     expect(concentrationResult).not.toBeNull();
-    expect(percentResult!.requiredInputOxygenVolumeMl).toBeGreaterThan(0);
+    expect(percentResult!.requiredGasVolumeLiters).toBeGreaterThan(0);
     expect(concentrationResult!.targetSurfaceOxygenUm).toBe(5);
   });
 
@@ -51,7 +52,7 @@ describe("surface oxygen estimate", () => {
     expect(result).not.toBeNull();
     expect(result!.consumedOxygenUm).toBeGreaterThan(0);
     expect(result!.consumedOxygenUmol).toBeGreaterThan(0);
-    expect(result!.equivalentInputOxygenVolumeMl).toBeGreaterThan(0);
+    expect(result!.equivalentInputGasVolumeLiters).toBeGreaterThan(0);
   });
 
   it("builds a timeline with target and maintenance events", () => {
