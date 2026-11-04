@@ -29,6 +29,7 @@
     "verify:public": "node scripts/verify-public-build.mjs"
   },
   "dependencies": {
+    "@fontsource/source-sans-3": "^5.3.1",
     "@noble/hashes": "1.8.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",

@@ -1,4 +1,7 @@
-import { useMemo, useState } from "react";
+import { CopyResultRegion } from "@/components/toolbox/CopyResultRegion";
+import { ScientificField } from "@/components/toolbox/ScientificField";
+import { useSessionState } from "@/contexts/SessionDraftContext";
+import { useMemo } from "react";
 import { Info, Layers3, RotateCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -21,15 +24,15 @@ const convertConcentration = (value: string, from: ConcentrationUnit, to: Concen
     return String(Number(converted.toPrecision(8))).replace(".", ",");
 };
 export function NycodenzCalculator() {
-    const [mode, setMode] = useState<LayerMode>("one");
-    const [concentrationUnit, setConcentrationUnit] = useState<ConcentrationUnit>("%");
-    const [stockPercent, setStockPercent] = useState("80");
-    const [targetPercent1, setTargetPercent1] = useState("9.6");
-    const [targetPercent2, setTargetPercent2] = useState("4.8");
-    const [totalVolume, setTotalVolume] = useState("12");
-    const [layer1TotalVolume, setLayer1TotalVolume] = useState("8");
-    const [layer2TotalVolume, setLayer2TotalVolume] = useState("4");
-    const [availableVolume, setAvailableVolume] = useState("5");
+    const [mode, setMode] = useSessionState<LayerMode>("NycodenzCalculator:mode", "one");
+    const [concentrationUnit, setConcentrationUnit] = useSessionState<ConcentrationUnit>("NycodenzCalculator:concentrationUnit", "%");
+    const [stockPercent, setStockPercent] = useSessionState("NycodenzCalculator:stockPercent", "80");
+    const [targetPercent1, setTargetPercent1] = useSessionState("NycodenzCalculator:targetPercent1", "9.6");
+    const [targetPercent2, setTargetPercent2] = useSessionState("NycodenzCalculator:targetPercent2", "4.8");
+    const [totalVolume, setTotalVolume] = useSessionState("NycodenzCalculator:totalVolume", "12");
+    const [layer1TotalVolume, setLayer1TotalVolume] = useSessionState("NycodenzCalculator:layer1TotalVolume", "8");
+    const [layer2TotalVolume, setLayer2TotalVolume] = useSessionState("NycodenzCalculator:layer2TotalVolume", "4");
+    const [availableVolume, setAvailableVolume] = useSessionState("NycodenzCalculator:availableVolume", "5");
     const result = useMemo(() => {
         const stock = read(stockPercent);
         const target1 = read(targetPercent1);
@@ -61,11 +64,11 @@ export function NycodenzCalculator() {
         const layer2 = read(layer2TotalVolume);
         return total !== null && layer1 !== null && layer2 !== null && Math.abs(layer1 + layer2 - total) > 0.000001;
     })();
-    const field = (label: string, value: string, setter: (value: string) => void, help: string, unit = "mL") => <label className="field-label">{label}{help && <span>{help}</span>}<div><Input value={value} onChange={event => setter(event.target.value)} inputMode="decimal"/><b>{unit}</b></div></label>;
+    const field = (label: string, value: string, setter: (value: string) => void, help: string, unit = "mL") => <ScientificField label={label} value={value} onChange={setter} help={help} unit={unit} />;
     return <section className="content-panel nycodenz-calculator">
     <div className="panel-heading"><div><span className="panel-index">PROTOCOL-ONLY TOOL / NYCODENZ</span><h2>Tính pha Nycodenz</h2><p>Tool này chỉ được sử dụng từ bước quy trình có liên kết, không xuất hiện trong bảng Công cụ tính tổng hợp.</p></div><Layers3 size={22}/></div>
-    <div className="result-toggle"><span>Số phân lớp</span><button type="button" className={mode === "one" ? "active" : ""} onClick={() => { setMode("one"); setTotalVolume("12"); }}>1 phân lớp</button><button type="button" className={mode === "two" ? "active" : ""} onClick={() => { setMode("two"); setTotalVolume("12"); setLayer1TotalVolume("8"); setLayer2TotalVolume("4"); }}>2 phân lớp</button></div>
-    <div className="result-toggle"><span>Đơn vị nồng độ</span><button type="button" className={concentrationUnit === "%" ? "active" : ""} onClick={() => changeConcentrationUnit("%")}>%</button><button type="button" className={concentrationUnit === "g/mL" ? "active" : ""} onClick={() => changeConcentrationUnit("g/mL")}>g/mL</button></div>
+    <div className="result-toggle"><span>Số phân lớp</span><button aria-pressed={mode === "one"} type="button" className={mode === "one" ? "active" : ""} onClick={() => { setMode("one"); setTotalVolume("12"); }}>1 phân lớp</button><button aria-pressed={mode === "two"} type="button" className={mode === "two" ? "active" : ""} onClick={() => { setMode("two"); setTotalVolume("12"); setLayer1TotalVolume("8"); setLayer2TotalVolume("4"); }}>2 phân lớp</button></div>
+    <div className="result-toggle"><span>Đơn vị nồng độ</span><button aria-pressed={concentrationUnit === "%"} type="button" className={concentrationUnit === "%" ? "active" : ""} onClick={() => changeConcentrationUnit("%")}>%</button><button aria-pressed={concentrationUnit === "g/mL"} type="button" className={concentrationUnit === "g/mL" ? "active" : ""} onClick={() => changeConcentrationUnit("g/mL")}>g/mL</button></div>
     <div className="nycodenz-grid">
       {field("Nồng độ Nycodenz ban đầu", stockPercent, setStockPercent, "", concentrationUnit)}
       {field(mode === "two" ? "Nồng độ Nycodenz 1" : "Nồng độ Nycodenz sử dụng", targetPercent1, setTargetPercent1, "", concentrationUnit)}
@@ -75,9 +78,9 @@ export function NycodenzCalculator() {
       {mode === "two" && field("Tổng dung tích Nycodenz 2", layer2TotalVolume, setLayer2TotalVolume, "")}
       {field("Dung tích có sẵn", availableVolume, setAvailableVolume, "")}
     </div>
-    {result ? <div className="nycodenz-results">
+    <CopyResultRegion label="Pha Nycodenz" available={Boolean(result)}>{result ? <div className="nycodenz-results">
       {result.mode === "one" ? <><div><small>NYCODENZ CẦN THÊM</small><strong>{format(result.nycodenzVolume)} mL</strong></div><div><small>GBSSB CẦN THÊM</small><strong>{format(result.gbssbVolume)} mL</strong></div><div><small>DUNG TÍCH SAU KHI THÊM</small><strong>{format(result.totalVolume)} mL</strong></div></> : <><div><small>LỚP 1 · NYCODENZ</small><strong>{format(result.layer1.nycodenzVolume)} mL</strong><span>GBSSB: {format(result.layer1.gbssbVolume)} mL · tổng lớp: {format(result.layer1.totalVolume)} mL</span></div><div><small>LỚP 2 · NYCODENZ</small><strong>{format(result.layer2.nycodenzVolume)} mL</strong><span>GBSSB: {format(result.layer2.gbssbVolume)} mL · tổng lớp: {format(result.layer2.totalVolume)} mL</span></div><div><small>PHÂN BỐ</small><strong>{format(result.availableVolume)} mL có sẵn</strong><span>Lớp 1 được thêm trước; lớp 2 dùng tổng 4 mL theo quy trình.</span></div></>}
-    </div> : <div className="chemical-warning"><Info size={15}/> {twoLayerTotalsMismatch ? "Tổng dung tích Nycodenz 1 và 2 phải bằng dung tích tổng." : "Nhập các nồng độ và dung tích hợp lệ để xem kết quả."}</div>}
+    </div> : <div className="chemical-warning"><Info size={15}/> {twoLayerTotalsMismatch ? "Tổng dung tích Nycodenz 1 và 2 phải bằng dung tích tổng." : "Nhập các nồng độ và dung tích hợp lệ để xem kết quả."}</div>}</CopyResultRegion>
     <div className="editor-footer"><span>Nồng độ: {concentrationUnit} · Dung tích: mL</span><Button variant="outline" onClick={reset}><RotateCcw size={14}/> Đặt lại</Button></div>
   </section>;
 }

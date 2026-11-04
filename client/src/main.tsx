@@ -7,7 +7,12 @@ import superjson from "superjson";
 import App from "./App";
 import GitHubPagesApp from "./pages/GitHubPagesApp";
 import { startLogin } from "./const";
+import { apiFetch } from "./lib/apiFetch";
+import "@fontsource/source-sans-3/400.css";
+import "@fontsource/source-sans-3/500.css";
+import "@fontsource/source-sans-3/600.css";
 import "./index.css";
+import "./dashboard.css";
 const queryClient = new QueryClient();
 const redirectToLoginIfUnauthorized = (error: unknown) => {
     if (!(error instanceof TRPCClientError))
@@ -38,12 +43,7 @@ const trpcClient = trpc.createClient({
         httpBatchLink({
             url: "/api/trpc",
             transformer: superjson,
-            fetch(input, init) {
-                return globalThis.fetch(input, {
-                    ...(init ?? {}),
-                    credentials: "include",
-                });
-            },
+            fetch: apiFetch,
         }),
     ],
 });

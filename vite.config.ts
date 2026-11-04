@@ -49,6 +49,13 @@ export default defineConfig({
     },
     server: {
         host: true,
+        // Standalone Vite serves the UI; the existing API runs separately.
+        // Keep production URLs and the full-stack development server unchanged.
+        proxy: {
+            "/api/trpc": { target: process.env.REBIOMED_DEV_API_TARGET || "http://127.0.0.1:3000", changeOrigin: true },
+            "/api/health": { target: process.env.REBIOMED_DEV_API_TARGET || "http://127.0.0.1:3000", changeOrigin: true },
+            "/api/oauth": { target: process.env.REBIOMED_DEV_API_TARGET || "http://127.0.0.1:3000", changeOrigin: true },
+        },
         allowedHosts: [
             "localhost",
             "127.0.0.1",

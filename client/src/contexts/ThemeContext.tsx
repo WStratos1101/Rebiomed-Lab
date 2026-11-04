@@ -14,8 +14,11 @@ interface ThemeProviderProps {
 export function ThemeProvider({ children, defaultTheme = "light", switchable = false, }: ThemeProviderProps) {
     const [theme, setTheme] = useState<Theme>(() => {
         if (switchable) {
-            const stored = localStorage.getItem("theme");
-            return (stored as Theme) || defaultTheme;
+            try {
+                const stored = localStorage.getItem("theme");
+                if (stored === "light" || stored === "dark") return stored;
+            } catch { /* Storage can be unavailable in private browsers. */ }
+            return defaultTheme;
         }
         return defaultTheme;
     });
@@ -28,7 +31,7 @@ export function ThemeProvider({ children, defaultTheme = "light", switchable = f
             root.classList.remove("dark");
         }
         if (switchable) {
-            localStorage.setItem("theme", theme);
+            try { localStorage.setItem("theme", theme); } catch { /* Keep switching usable without storage. */ }
         }
     }, [theme, switchable]);
     const toggleTheme = switchable
