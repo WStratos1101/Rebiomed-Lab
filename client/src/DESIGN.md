@@ -162,6 +162,8 @@ Approval badges use `ApprovalStatus` and an `.approval-header` grid with `minmax
 
 The desktop shell uses a `244px` sidebar, collapsing to an icon rail of `64px`, with a content wrapper capped at `1560px`. Keep **Sổ tay phòng thí nghiệm** first in navigation. The rail scrolls independently so navigation and account controls remain reachable.
 
+Open **Nhật ký Thí nghiệm** as the default home. Keep the administration and feedback links under **Quản lý và Phản ánh**. The expanded sidebar footer gives the presenter credit its own full-width, centered single line; hide that line in the collapsed icon rail. Both Hypoxia calculators use the standard calculator workspace, with the tool list on desktop and the shared tool picker on small screens.
+
 Use the extracted spacing rhythm for controls, groups and sections. The resource library is a list with aligned metadata and a separate favorite control. Search, kind and task-category filters sit above collection controls for all, favorites and recent items.
 
 Extend scientific layouts by task: calculators follow formula → inputs with units → result and copy action; protocols use sequential steps with contextual tools; journal work pairs editing and entries; qPCR and chemical workflows preserve their tables and quantitative comparisons. Share primitives without forcing every tool into the same card grid.

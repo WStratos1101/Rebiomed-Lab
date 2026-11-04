@@ -34,7 +34,7 @@ const recipes = titles.map((name, i) => ({ id: ['pbs', 'qa-long', 'qa-no-status'
    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${name}: page overflow`);
    checks.push({ name, values }); return values;
   };
-  await page.goto(baseURL); await page.locator('.toolbox-row').first().waitFor();
+  await page.goto(baseURL); await nav('Hộp công cụ'); await page.locator('.toolbox-row').first().waitFor();
   assert.equal(await page.locator('.toolbox-row .approval-status').count(), 0);
   for (const width of [1440, 768, 390, 320]) {
    await page.setViewportSize({ width, height: 1000 }); await page.waitForTimeout(180);
