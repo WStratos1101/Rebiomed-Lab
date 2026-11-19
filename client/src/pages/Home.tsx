@@ -73,6 +73,7 @@ const formatVietnamTime = (date: Date) => new Intl.DateTimeFormat("vi-VN", {
   hour12: false,
 }).format(date);
 const ExperimentJournal = lazy(() => import("@/components/ExperimentJournal").then(module => ({ default: module.ExperimentJournal })));
+const JournalLibrary = lazy(() => import("@/components/JournalLibrary"));
 const SeedingCalculator = lazy(() => import("@/components/SeedingCalculator").then(module => ({ default: module.SeedingCalculator })));
 const NycodenzCalculator = lazy(() => import("@/components/NycodenzCalculator").then(module => ({ default: module.NycodenzCalculator })));
 const BcaWorkingSolutionCalculator = lazy(() => import("@/components/BcaWorkingSolutionCalculator").then(module => ({ default: module.BcaWorkingSolutionCalculator })));
@@ -81,7 +82,7 @@ type SpecialCategory = "Hypoxia" | "HighPressure";
 const SPECIAL_CATEGORY_LABEL: Record<SpecialCategory, string> = { Hypoxia: "Nuôi cấy Hypoxia", HighPressure: "Nuôi cấy áp suất cao" };
 type MasterMixTab = "cdna" | "qdna";
 
-type View = "toolbox" | "overview" | "protocols" | "samples" | "calculator" | "qpcr" | "special" | "chemicals" | "chemicalStock" | "chemicalIcc" | "masterMix" | "chemicalCdna" | "feedback" | "admin" | "adminAccounts" | "adminFeedback" | "auth" | "userAccount" | "createProtocol";
+type View = "journalLibrary" | "toolbox" | "overview" | "protocols" | "samples" | "calculator" | "qpcr" | "special" | "chemicals" | "chemicalStock" | "chemicalIcc" | "masterMix" | "chemicalCdna" | "feedback" | "admin" | "adminAccounts" | "adminFeedback" | "auth" | "userAccount" | "createProtocol";
 type Protocol = {
   id: string;
   title: string;
@@ -163,6 +164,7 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard; group: 
   { id: "protocols", label: "Quy trình", icon: ClipboardList, group: "Sổ tay phòng thí nghiệm" },
   { id: "overview", label: "Nhật ký Thí nghiệm", icon: LayoutDashboard, group: "Sổ tay phòng thí nghiệm" },
   { id: "samples", label: "Mẫu & lý thuyết", icon: BookOpen, group: "Sổ tay phòng thí nghiệm" },
+  { id: "journalLibrary", label: "Thư viện Journal", icon: LibraryBig, group: "Sổ tay phòng thí nghiệm" },
   { id: "toolbox", label: "Hộp công cụ", icon: LibraryBig, group: "Công cụ" },
   { id: "calculator", label: "Công cụ tính", icon: Calculator, group: "Công cụ" },
   { id: "qpcr", label: "Tính toán qPCR", icon: Calculator, group: "Công cụ" },
@@ -641,6 +643,7 @@ export default function Home() {
           <div hidden={view !== "toolbox"}><ToolboxLibrary items={toolboxItems} favorites={toolboxPreferences.favorites} recent={toolboxPreferences.recent} onFavorite={toolboxPreferences.toggleFavorite} onOpen={openToolboxItem} loading={contentQuery.isLoading} error={contentQuery.isError} onRetry={() => { void contentQuery.refetch(); }} /></div>
           <SessionDraftProvider key={accountScope}>
           <div hidden={view !== "overview"}>{(view === "overview" || journalVisited) && <Suspense fallback={lazyFallback}><ExperimentJournal key={user?.id ?? "anonymous"} userId={user?.id} userName={user?.name} /></Suspense>}</div>
+           {view === "journalLibrary" && <Suspense fallback={lazyFallback}><JournalLibrary /></Suspense>}
           {view === "feedback" && (isGuest ? <GuestLockedPanel /> : <Suspense fallback={lazyFallback}><FeedbackView userId={user?.id} userName={user?.name} /></Suspense>)}
           {view === "protocols" && contentQuery.isError && <section className="content-load-error" role="alert"><AlertTriangle size={18} /><div><strong>Không thể tải kho quy trình</strong><p>Không nhận được dữ liệu từ máy chủ. Hãy kiểm tra kết nối rồi tải lại. Các quy trình đã tải trước đó vẫn được giữ lại.</p>{import.meta.env.DEV && <p>Chạy <code>pnpm dev</code> để sử dụng ứng dụng cùng API local. Nếu chạy Vite riêng, hãy khởi động API ở cổng 3000 hoặc cấu hình <code>REBIOMED_DEV_API_TARGET</code>, rồi khởi động lại Vite.</p>}</div><Button variant="outline" onClick={() => contentQuery.refetch()}>Tải lại dữ liệu</Button></section>}
           {view === "protocols" && <ProtocolsView calculators={calculatorTools} onUseCalculator={openCalculator} onAttachCalculator={attachCalculator} renderCalculator={renderInlineCalculator} loading={contentQuery.isLoading} loadError={contentQuery.isError} protocols={protocols} selected={selectedProtocol} setSelected={setSelectedProtocol} openProtocol={openProtocol} onEdit={editProtocol} onDelete={handleDeleteProtocol} onCreate={() => startCreateProtocol()} canEdit={canEdit} canEditApproved={isAdmin} canDelete={isAdmin || selectedProtocol?.status === "Bản nháp"} />}
